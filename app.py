@@ -5,6 +5,7 @@ import pandas as pd
 import streamlit as st
 
 from parsers import exec_summary, parse_emails, parse_landing, parse_regs, parse_survey_csv, parse_survey_text
+from snapshot_store import append_snapshot_row, build_snapshot_row, has_snapshot_data
 from usage_store import init_state, load_usage, usage_success
 from utils import clip_snippet, to_float, to_int
 
@@ -41,6 +42,21 @@ with st.sidebar:
         st.session_state["survey_tables"] = {}
         st.session_state["exec_summary_text"] = ""
         st.success("Parsed dashboard data cleared.")
+    st.divider()
+    st.subheader("Save Webinar Snapshot")
+    webinar_name = st.text_input("Webinar Name", placeholder="2026-02-25 AI Webinar")
+    if st.button("Save Webinar Snapshot", use_container_width=True):
+        emails_df = st.session_state["parsed_emails_df"]
+        landing = st.session_state["landing_metrics_dict"]
+        regs_df = st.session_state["registrants_df"]
+        survey = st.session_state["survey_derived"]
+        summary = st.session_state.get("exec_summary_text", "")
+        if not has_snapshot_data(emails_df, landing, regs_df, survey, summary):
+            st.warning("Nothing to save yet. Parse at least one section first.")
+        else:
+            row = build_snapshot_row(webinar_name, emails_df, landing, regs_df, survey, summary)
+            path = append_snapshot_row(row)
+            st.success(f"Saved snapshot to {path}")
 
 tabs = st.tabs(["Emails", "Landing Page", "Registrants + Attendees", "Survey (MS Forms)", "Executive Summary"])
 t1, t2, t3, t4, t5 = tabs
