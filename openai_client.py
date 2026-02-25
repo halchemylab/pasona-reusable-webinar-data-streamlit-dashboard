@@ -6,6 +6,13 @@ from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI, 
 from pydantic import BaseModel, ValidationError
 
 
+def _should_send_temperature(model: str, temp: float) -> bool:
+    # Some models (for example current gpt-5 variants) only accept default temperature.
+    if model.lower().startswith("gpt-5"):
+        return False
+    return True
+
+
 def _api_error_message(err: Exception, attempt: int, retries: int) -> str:
     prefix = f"(attempt {attempt + 1}/{retries + 1})"
     if isinstance(err, APITimeoutError):
@@ -31,14 +38,19 @@ def api_structured(api_key: str, model: str, temp: float, schema_model: Type[Bas
     raw: Optional[str] = None
     retries = 2
     last_err = None
+    send_temp = _should_send_temperature(model, temp)
     for attempt in range(retries + 1):
         try:
             if hasattr(client, "responses"):
+                req = {
+                    "model": model,
+                    "input": [{"role": "system", "content": sys}, {"role": "user", "content": usr}],
+                    "text": {"format": {"type": "json_schema", "name": schema_model.__name__, "schema": schema, "strict": True}},
+                }
+                if send_temp:
+                    req["temperature"] = temp
                 r = client.responses.create(
-                    model=model,
-                    temperature=temp,
-                    input=[{"role": "system", "content": sys}, {"role": "user", "content": usr}],
-                    text={"format": {"type": "json_schema", "name": schema_model.__name__, "schema": schema, "strict": True}},
+                    **req,
                 )
                 raw = getattr(r, "output_text", None) or ""
                 if not raw:
@@ -47,15 +59,17 @@ def api_structured(api_key: str, model: str, temp: float, schema_model: Type[Bas
                             if hasattr(c, "text"):
                                 raw += c.text
             else:
-                r = client.chat.completions.create(
-                    model=model,
-                    temperature=temp,
-                    messages=[
+                req = {
+                    "model": model,
+                    "messages": [
                         {"role": "system", "content": f"{sys}\nReturn only valid JSON for this schema: {json.dumps(schema, ensure_ascii=False)}"},
                         {"role": "user", "content": usr},
                     ],
-                    response_format={"type": "json_object"},
-                )
+                    "response_format": {"type": "json_object"},
+                }
+                if send_temp:
+                    req["temperature"] = temp
+                r = client.chat.completions.create(**req)
                 choices = getattr(r, "choices", []) or []
                 first = choices[0] if choices else None
                 message = getattr(first, "message", None)
@@ -63,6 +77,12 @@ def api_structured(api_key: str, model: str, temp: float, schema_model: Type[Bas
             parsed = schema_model.model_validate(json.loads(raw))
             return parsed, raw, None
         except (APITimeoutError, APIConnectionError, RateLimitError, APIStatusError) as e:
+            if isinstance(e, APIStatusError):
+                msg = str(e).lower()
+                if "temperature" in msg and "default (1)" in msg and send_temp:
+                    # Retry once without temperature when model rejects custom values.
+                    send_temp = False
+                    continue
             last_err = _api_error_message(e, attempt, retries)
             status_code = getattr(e, "status_code", None)
             retryable_status = status_code is None or int(status_code) >= 500 or int(status_code) == 429
