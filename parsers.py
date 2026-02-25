@@ -1,29 +1,122 @@
 import json
 import re
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import pandas as pd
 
 from models import ConsultLead, EmailMetrics, ExecSummaryText, LandingMetrics, QualSummary, RegistrantList, SurveyDerived, ThemeItem, ValueRatingStats
 from openai_client import api_structured
-from utils import clip_snippet, detect_col, parse_yes_no, to_float
+from utils import clip_snippet, detect_col, parse_yes_no, to_float, to_int
+
+
+def _split_email_blocks(text: str):
+    t = (text or "").strip()
+    if not t:
+        return []
+    starts = [m.start() for m in re.finditer(r"Click-Through Rate Report", t, flags=re.I)]
+    if not starts:
+        return [t]
+    blocks = []
+    for i, s in enumerate(starts):
+        next_start = starts[i + 1] if i + 1 < len(starts) else len(t)
+        page_end = re.search(r"Page\s+1\s+of\s+1", t[s:next_start], flags=re.I)
+        e = s + page_end.end() if page_end else next_start
+        b = t[s:e].strip()
+        if b:
+            blocks.append(b)
+    return blocks
+
+
+def _is_metrics_block(block: str) -> bool:
+    keys = ["Total Sent", "Total Delivered", "Unique HTML Opens", "Unique Click Through Rate", "Delivery Rate"]
+    hits = sum(1 for k in keys if re.search(re.escape(k), block, flags=re.I))
+    return hits >= 2
+
+
+def _find_group(text: str, pattern: str, flags: int = re.I) -> Optional[str]:
+    m = re.search(pattern, text, flags=flags)
+    return m.group(1).strip() if m else None
+
+
+def _find_first_float(text: str, patterns) -> Optional[float]:
+    for p in patterns:
+        v = to_float(_find_group(text, p))
+        if v is not None:
+            return v
+    return None
+
+
+def _extract_email_metrics(block: str, idx: int) -> Dict[str, Any]:
+    d: Dict[str, Any] = {
+        "name": None,
+        "subject": _find_group(block, r"Subject\s+(.+?)\s+Tracker\s+Domain"),
+        "started_at": _find_group(block, r"Started\s+At\s+(.+?)\s+Created\s+At"),
+        "total_sent": to_int(_find_group(block, r"Total\s+Sent\s+([\d,]+)")),
+        "total_delivered": to_int(_find_group(block, r"Total\s+Delivered\s+([\d,]+)")),
+        "delivery_rate": _find_first_float(
+            block,
+            [
+                r"Total\s+Delivered\s+[\d,]+\s+Total\s+Failed\s+[\d,]+\s+Delivery\s+Rate\s+([\d.]+)%?",
+                r"Delivery\s+Rate\s+([\d.]+)%?",
+            ],
+        ),
+        "unique_opens": to_int(_find_group(block, r"Unique\s+HTML\s+Opens\s+([\d,]+)")),
+        "open_rate": _find_first_float(
+            block,
+            [
+                r"Unique\s+HTML\s+Opens\s+[\d,]+\s+HTML\s+Open\s+Rate\s+([\d.]+)%?",
+                r"HTML\s+Open\s+Rate\s+([\d.]+)%?\s+Total\s+Clicks",
+                r"HTML\s+Open\s+Rate\s+([\d.]+)%?",
+            ],
+        ),
+        "unique_clicks": to_int(_find_group(block, r"Unique\s+Clicks\s+([\d,]+)")),
+        "unique_ctr": _find_first_float(
+            block,
+            [
+                r"Unique\s+Clicks\s+[\d,]+\s+Unique\s+Click\s+Through\s+Rate\s+([\d.]+)%?",
+                r"Unique\s+Click\s+Through\s+Rate\s+([\d.]+)%?",
+            ],
+        ),
+        "click_to_open": _find_first_float(
+            block,
+            [
+                r"Unique\s+Click\s+Through\s+Rate\s+[\d.]+%?\s+Click\s+to\s+Open\s+Ratio\s+([\d.]+)%?",
+                r"Click\s+to\s+Open\s+Ratio\s+([\d.]+)%?",
+            ],
+        ),
+        "opt_outs": to_int(_find_group(block, r"Total\s+Opt\s+Outs\s+([\d,]+)")),
+    }
+    if not d.get("name"):
+        d["name"] = f"Email {idx}"
+    return d
 
 
 def parse_emails(text: str, api_key: str, model: str, temp: float):
-    blocks = [b.strip() for b in re.split(r"(?=Click-Through Rate Report)", text.strip(), flags=re.I) if b.strip()]
+    blocks = _split_email_blocks(text)
     if not blocks:
         blocks = [text.strip()]
     out, dbg, ok = [], [], True
     for i, b in enumerate(blocks, start=1):
+        if not _is_metrics_block(b):
+            dbg.append(f"Block {i}: skipped non-metrics content block.")
+            continue
+        d = _extract_email_metrics(b, i)
+        core = [
+            d.get("total_sent"),
+            d.get("total_delivered"),
+            d.get("open_rate"),
+            d.get("unique_clicks"),
+            d.get("unique_ctr"),
+        ]
+        if sum(x is not None for x in core) >= 3:
+            out.append(d)
+            continue
         p, raw, err = api_structured(api_key, model, temp, EmailMetrics, "Extract email metrics. Missing -> null.", b)
         if p is None:
             ok = False
             dbg.append(f"Block {i}: {err}\nRaw:\n{raw}")
             continue
-        d = p.model_dump()
-        if not d.get("name"):
-            d["name"] = f"Email {i}"
-        out.append(d)
+        out.append(p.model_dump())
     return pd.DataFrame(out), dbg, ok and len(out) > 0
 
 
