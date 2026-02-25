@@ -14,13 +14,13 @@ def get_key(override: str) -> str:
     return (override or "").strip() or os.getenv("OPENAI_API_KEY", "").strip()
 
 
-st.set_page_config(page_title="Marketing Analytics Dashboard MVP", layout="wide")
+st.set_page_config(page_title="Webinar Marketing Analytics Dashboard", layout="wide")
 init_state()
 if not st.session_state["usage_loaded"]:
     load_usage()
     st.session_state["usage_loaded"] = True
 
-st.title("Marketing Analytics Dashboard MVP")
+st.title("Webinar Marketing Analytics Dashboard")
 with st.sidebar:
     t = int(st.session_state["times_used"])
     h, m = divmod(t * 30, 60)
