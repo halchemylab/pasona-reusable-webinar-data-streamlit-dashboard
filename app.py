@@ -24,9 +24,12 @@ st.title("Marketing Analytics Dashboard MVP")
 with st.sidebar:
     t = int(st.session_state["times_used"])
     h, m = divmod(t * 30, 60)
-    st.metric("Times Used", f"{t}")
-    st.metric("Time Saved", f"{h}h {m}m")
-    st.metric("Money Saved", f"${t * 15:,.0f}")
+    with st.container(border=True):
+        st.metric("Times Used", f"{t}")
+    with st.container(border=True):
+        st.metric("Time Saved", f"{h}h {m}m")
+    with st.container(border=True):
+        st.metric("Money Saved", f"${t * 15:,.0f}")
     st.divider()
     st.subheader("LLM Settings")
     key_override = st.text_input("OpenAI API Key (override)", type="password", placeholder="sk-...")
