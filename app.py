@@ -3,11 +3,14 @@ import os
 import matplotlib.pyplot as plt
 import pandas as pd
 import streamlit as st
+from dotenv import load_dotenv
 
 from parsers import exec_summary, parse_emails, parse_landing, parse_regs, parse_survey_csv, parse_survey_text
 from snapshot_store import append_snapshot_row, build_snapshot_row, has_snapshot_data
 from usage_store import init_state, load_usage, usage_success
 from utils import clip_snippet, to_float, to_int
+
+load_dotenv()
 
 
 def get_key(override: str) -> str:
