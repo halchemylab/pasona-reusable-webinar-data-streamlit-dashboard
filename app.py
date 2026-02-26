@@ -1,4 +1,5 @@
 import os
+import re
 from pathlib import Path
 
 import altair as alt
@@ -711,6 +712,7 @@ with t5:
             st.info("No consultation-yes leads found.")
 
 with t6:
+    st.markdown("### Executive Summary")
     st.caption("Copy hint: click in the text area and copy.")
     if st.button("Generate Executive Summary"):
         if not api_key:
@@ -733,4 +735,33 @@ with t6:
                 st.error("Executive summary generation failed.")
                 with st.expander("Model output/debug"):
                     st.text(dbg)
-    st.text_area("Executive Summary (copy-ready)", value=st.session_state.get("exec_summary_text", ""), height=220)
+    summary_text = st.session_state.get("exec_summary_text", "").strip()
+    if summary_text:
+        emails_df = st.session_state["parsed_emails_df"]
+        landing = st.session_state["landing_metrics_dict"] or {}
+        social = st.session_state["social_metrics_dict"] or {}
+        survey = st.session_state["survey_derived"] or {}
+        avg_open = pd.to_numeric(emails_df.get("open_rate"), errors="coerce").mean() if not emails_df.empty else None
+        landing_views = int(to_int(landing.get("views")) or 0)
+        li_imp = int(to_int((social.get("linkedin") or {}).get("impressions")) or 0)
+        fb_views = int(to_int((social.get("facebook") or {}).get("views")) or 0)
+        consult_yes = int(to_int(survey.get("consult_yes_count")) or 0)
+
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("Email Avg Open", f"{avg_open:.2f}%" if avg_open is not None else "N/A")
+        k2.metric("Landing Views", f"{landing_views:,}")
+        k3.metric("Organic Reach", f"{li_imp + fb_views:,}")
+        k4.metric("Consultation Leads", f"{consult_yes:,}")
+
+        sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+|\n+", summary_text) if s.strip()]
+        highlights = sentences[:4]
+        if highlights:
+            st.markdown("#### Key Highlights")
+            for h in highlights:
+                st.write(f"- {h}")
+
+        with st.container(border=True):
+            st.markdown("#### Narrative")
+            st.markdown(summary_text)
+
+    st.text_area("Executive Summary (copy-ready)", value=summary_text, height=220)
