@@ -24,6 +24,17 @@ if not st.session_state["usage_loaded"]:
     st.session_state["usage_loaded"] = True
 
 st.title("Webinar Marketing Analytics Dashboard")
+top_a, top_b = st.columns([1, 5])
+with top_a:
+    if st.button("Start New Webinar", use_container_width=True, type="primary"):
+        st.session_state["parsed_emails_df"] = pd.DataFrame()
+        st.session_state["landing_metrics_dict"] = {}
+        st.session_state["social_metrics_dict"] = {}
+        st.session_state["registrants_df"] = pd.DataFrame()
+        st.session_state["survey_derived"] = {}
+        st.session_state["survey_tables"] = {}
+        st.session_state["exec_summary_text"] = ""
+        st.success("All parsed data cleared. Ready for a new webinar.")
 with st.sidebar:
     t = int(st.session_state["webinars_saved"])
     with st.container(border=True):
