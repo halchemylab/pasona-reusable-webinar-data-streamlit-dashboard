@@ -338,6 +338,60 @@ def render_regs_tab(api_key: str, model: str, temp: float) -> None:
     df = st.session_state["registrants_df"]
     if not df.empty:
         st.dataframe(df, use_container_width=True)
+        if {"list_name", "total_prospects", "mailable_prospects", "mailable_rate"}.issubset(df.columns):
+            x = df.copy()
+            x["total_prospects"] = pd.to_numeric(x["total_prospects"], errors="coerce")
+            x["mailable_prospects"] = pd.to_numeric(x["mailable_prospects"], errors="coerce")
+            x["mailable_rate"] = pd.to_numeric(x["mailable_rate"], errors="coerce")
+
+            n_lists = int(len(x))
+            total = int(x["total_prospects"].fillna(0).sum())
+            mailable = int(x["mailable_prospects"].fillna(0).sum())
+            weighted_rate = (100.0 * mailable / total) if total > 0 else float(x["mailable_rate"].mean() or 0)
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Lists Parsed", f"{n_lists:,}")
+            c2.metric("Total Prospects", f"{total:,}")
+            c3.metric("Mailable Prospects", f"{mailable:,}")
+            c4.metric("Mailable Rate", f"{weighted_rate:.1f}%")
+
+            bars = (
+                x[["list_name", "total_prospects", "mailable_prospects"]]
+                .melt(id_vars=["list_name"], var_name="metric", value_name="value")
+                .dropna(subset=["value"])
+            )
+            if not bars.empty:
+                chart = (
+                    alt.Chart(bars)
+                    .mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4)
+                    .encode(
+                        x=alt.X("list_name:N", title="List"),
+                        y=alt.Y("value:Q", title="Prospects"),
+                        color=alt.Color("metric:N", scale=alt.Scale(domain=["total_prospects", "mailable_prospects"], range=["#2563eb", "#10b981"])),
+                        xOffset="metric:N",
+                        tooltip=["list_name:N", "metric:N", "value:Q"],
+                    )
+                    .properties(height=300, title="Prospect Volume by List")
+                )
+                st.altair_chart(chart, use_container_width=True)
+
+            st.markdown("#### Data Science View: Mailable Efficiency Frontier")
+            frontier = x.dropna(subset=["total_prospects"]).copy()
+            if not frontier.empty:
+                if frontier["mailable_rate"].isna().all():
+                    frontier["mailable_rate"] = (100 * frontier["mailable_prospects"] / frontier["total_prospects"]).fillna(0)
+                front = (
+                    alt.Chart(frontier)
+                    .mark_circle(size=220, color="#2563eb", opacity=0.85)
+                    .encode(
+                        x=alt.X("total_prospects:Q", title="Total Prospects"),
+                        y=alt.Y("mailable_rate:Q", title="Mailable Rate (%)"),
+                        tooltip=["list_name:N", "total_prospects:Q", "mailable_prospects:Q", alt.Tooltip("mailable_rate:Q", format=".1f")],
+                    )
+                    .properties(height=320)
+                )
+                st.altair_chart(front, use_container_width=True)
+            return
+
         x = df.copy()
         if "last_submitted" in x.columns:
             x["submitted_dt"] = pd.to_datetime(x["last_submitted"], errors="coerce")

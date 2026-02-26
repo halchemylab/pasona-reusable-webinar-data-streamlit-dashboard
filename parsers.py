@@ -1,5 +1,7 @@
 import json
 import re
+import unicodedata
+from io import StringIO
 from typing import Any, Dict, Optional
 
 import pandas as pd
@@ -7,6 +9,12 @@ import pandas as pd
 from models import ConsultLead, EmailMetrics, ExecSummaryText, LandingMetrics, QualSummary, RegistrantList, SurveyDerived, ThemeItem, ValueRatingStats
 from openai_client import api_structured
 from utils import clip_snippet, detect_col, parse_yes_no, to_float, to_int
+
+
+def _norm_ws(s: str) -> str:
+    x = unicodedata.normalize("NFKC", str(s or ""))
+    x = x.replace("\u00a0", " ").replace("\u202f", " ")
+    return re.sub(r"\s+", " ", x).strip()
 
 
 def _split_email_blocks(text: str):
@@ -216,17 +224,282 @@ def _extract_regs_rulebased(text: str):
                 rec["last_activity"] = val or None
         if rec:
             rows.append(rec)
+    if rows:
+        return rows
+
+    sf_rows = _extract_regs_salesforce_list(text or "")
+    if sf_rows:
+        return sf_rows
+
+    chunks = [c.strip() for c in re.split(r"(?i)(?=\bname\s*:)", text or "") if c.strip()]
+    for chunk in chunks:
+        rec: Dict[str, Any] = {}
+        rec["name"] = _find_group(chunk, r"(?i)\bname\s*:\s*(.+?)(?=\s+\b(company|score|last submitted|last activity)\b\s*:|$)")
+        rec["company"] = _find_group(chunk, r"(?i)\bcompany\s*:\s*(.+?)(?=\s+\b(name|score|last submitted|last activity)\b\s*:|$)")
+        rec["score"] = to_float(_find_group(chunk, r"(?i)\bscore\s*:\s*([0-9]+(?:\.[0-9]+)?)"))
+        rec["last_submitted"] = _find_group(chunk, r"(?i)\blast submitted\s*:\s*(.+?)(?=\s+\b(name|company|score|last activity)\b\s*:|$)")
+        rec["last_activity"] = _find_group(chunk, r"(?i)\blast activity\s*:\s*(.+?)(?=\s+\b(name|company|score|last submitted)\b\s*:|$)")
+        rec = {k: v for k, v in rec.items() if v not in [None, ""]}
+        if rec:
+            rows.append(rec)
+    if rows:
+        return rows
+
+    raw = (text or "").strip()
+    if "," in raw and ("name" in raw.lower() or "company" in raw.lower()):
+        try:
+            df = pd.read_csv(StringIO(raw))
+            cols = list(df.columns)
+            c_name = detect_col(cols, ["name"])
+            c_company = detect_col(cols, ["company"])
+            c_score = detect_col(cols, ["score"])
+            c_last_submitted = detect_col(cols, ["last submitted"])
+            c_last_activity = detect_col(cols, ["last activity"])
+            for _, r in df.iterrows():
+                rec = {
+                    "name": str(r.get(c_name, "")).strip() or None if c_name else None,
+                    "company": str(r.get(c_company, "")).strip() or None if c_company else None,
+                    "score": to_float(r.get(c_score)) if c_score else None,
+                    "last_submitted": str(r.get(c_last_submitted, "")).strip() or None if c_last_submitted else None,
+                    "last_activity": str(r.get(c_last_activity, "")).strip() or None if c_last_activity else None,
+                }
+                rec = {k: v for k, v in rec.items() if v not in [None, ""]}
+                if rec:
+                    rows.append(rec)
+        except Exception:
+            pass
     return rows
+
+
+def _extract_regs_salesforce_list(text: str):
+    # Handles raw Salesforce/Pardot list dumps where each prospect is spread across lines:
+    # Name(+View in CRM), Company, Score, Joined, Opted Out, Created.
+    raw_lines = [ln.strip() for ln in (text or "").splitlines()]
+    lines = []
+    for ln in raw_lines:
+        if not ln:
+            continue
+        l = _norm_ws(ln)
+        low = l.lower()
+        if low in {
+            "skip navigation",
+            "salesforce pardot",
+            "search salesforce",
+            "search",
+            "marketing",
+            "prospects",
+            "reports",
+            "admin",
+            "home",
+            "segmentation",
+            "lists",
+            "prospects details",
+            "list emails",
+            "usage",
+            "prospects",
+            "actions",
+            "tags tools",
+            "tagstools",
+            "filter:",
+            "created",
+            "all time",
+            "name",
+            "company",
+            "score",
+            "grade",
+            "joined",
+            "opted out of list",
+            "with 0 selected:",
+        }:
+            continue
+        if re.search(r"^page\s+\d+\s+of\s+\d+", low):
+            continue
+        if re.search(r"^showing\s+\d+\s+of\s+\d+", low):
+            continue
+        if re.search(r"^date range", low):
+            continue
+        if re.search(r"^view:", low):
+            continue
+        if re.search(r"^total prospects|^mailable prospects|^mailable$", low):
+            continue
+        if low in {"next»", "split copy", "edit"}:
+            continue
+        if re.fullmatch(r"view in crm", low):
+            continue
+        lines.append(l)
+
+    dt_re = re.compile(r"^[A-Za-z]{3,9}\.?\s+\d{1,2},\s+\d{4}\s+\d{1,2}:\d{2}\s*[AP]\.?M\.?$", re.I)
+
+    def clean_name(v: str) -> str:
+        s = re.sub(r"\bview in crm\b", "", v, flags=re.I)
+        s = re.sub(r"\boperational emails only\b", "", s, flags=re.I)
+        return re.sub(r"\s+", " ", s).strip(" '\"")
+
+    def likely_company(v: str) -> bool:
+        s = v.lower()
+        keys = ["inc", "llc", "ltd", "corporation", "corp", "company", "co.", "university", "bank", "pharmaceutical", "america", "usa", "services", "consulting", "translation"]
+        return any(k in s for k in keys)
+
+    def likely_person(v: str) -> bool:
+        s = re.sub(r"[^A-Za-z\.\-\s'()]", "", v).strip()
+        if not s:
+            return False
+        if "," in s:
+            return False
+        parts = [p for p in s.split() if p]
+        return 1 <= len(parts) <= 5
+
+    out = []
+    used = set()
+    for i in range(len(lines) - 3):
+        if i in used:
+            continue
+        score_line, joined_line, opt_line, created_line = lines[i], lines[i + 1], lines[i + 2], lines[i + 3]
+        if not re.fullmatch(r"\d{1,4}", score_line):
+            continue
+        if not dt_re.match(joined_line):
+            continue
+        if opt_line.lower() not in {"yes", "no"}:
+            continue
+        if not dt_re.match(created_line):
+            continue
+
+        prev1 = _norm_ws(lines[i - 1]) if i - 1 >= 0 else ""
+        prev2 = _norm_ws(lines[i - 2]) if i - 2 >= 0 else ""
+        prev1_clean = clean_name(prev1)
+        prev2_clean = clean_name(prev2)
+
+        name = None
+        company = None
+        if prev2 and prev1 and (likely_company(prev1_clean) or likely_person(prev2_clean)):
+            name = prev2_clean
+            company = prev1_clean
+        else:
+            name = prev1_clean if prev1_clean else prev2_clean
+            company = None
+            if prev2 and prev2_clean and likely_company(prev2_clean):
+                company = prev2_clean
+
+        if name:
+            out.append(
+                {
+                    "name": name,
+                    "company": company or None,
+                    "score": to_float(score_line),
+                    "last_submitted": joined_line,
+                    "last_activity": created_line,
+                }
+            )
+            used.update({i, i + 1, i + 2, i + 3})
+    return out
+
+
+def _extract_regs_salesforce_regex(text: str):
+    t = unicodedata.normalize("NFKC", (text or "")).replace("\u00a0", " ").replace("\u202f", " ").replace("\r\n", "\n")
+    dt = r"[A-Za-z]{3,9}\.?\s+\d{1,2},\s+\d{4}\s+\d{1,2}:\d{2}\s*[AP]\.?M\.?"
+    pat = re.compile(
+        rf"(?P<name>[^\n]+?)\s*(?:View in CRM)?\s*\n+\s*(?P<company>[^\n]+?)\s*\n+\s*(?P<score>\d{{1,4}})\s*\n+\s*(?P<joined>{dt})\s*\n+\s*(?:Yes|No)\s*\n+\s*(?P<created>{dt})",
+        re.I,
+    )
+    out = []
+    for m in pat.finditer(t):
+        name = re.sub(r"\bOperational Emails Only\b", "", _norm_ws(m.group("name")), flags=re.I).strip(" '\"")
+        company = _norm_ws(m.group("company")).strip(" '\"")
+        if not name:
+            continue
+        if any(x in name.lower() for x in ["tagstools", "actions", "all prospects", "filter", "view:"]):
+            continue
+        out.append(
+            {
+                "name": name,
+                "company": company or None,
+                "score": to_float(m.group("score")),
+                "last_submitted": m.group("joined"),
+                "last_activity": m.group("created"),
+            }
+        )
+    return out
+
+
+def _extract_regs_list_summaries(text: str):
+    lines = [_norm_ws(ln) for ln in (text or "").splitlines()]
+    lines = [ln for ln in lines if ln]
+
+    def find_number_before_label(start: int, end: int, label_pat: str):
+        for j in range(start, min(end, len(lines))):
+            if re.search(label_pat, lines[j], flags=re.I):
+                if j - 1 >= start:
+                    n = to_int(lines[j - 1])
+                    if n is not None:
+                        return n
+                n2 = to_int(lines[j])
+                if n2 is not None:
+                    return n2
+        return None
+
+    def find_percent_mailable(start: int, end: int):
+        for j in range(start, min(end, len(lines))):
+            if "%" in lines[j]:
+                p0 = to_float(lines[j])
+                if p0 is not None:
+                    return p0
+        for j in range(start, min(end, len(lines))):
+            if re.search(r"mailable", lines[j], flags=re.I):
+                if j - 1 >= start:
+                    p = to_float(lines[j - 1])
+                    if p is not None and "%" in lines[j - 1]:
+                        return p
+                p2 = to_float(lines[j])
+                if p2 is not None and "%" in lines[j]:
+                    return p2
+        return None
+
+    out = []
+    for i, ln in enumerate(lines):
+        if not re.search(r"^webinar_", ln, flags=re.I):
+            continue
+        w_start = i
+        w_end = min(i + 30, len(lines))
+        total = find_number_before_label(w_start, w_end, r"total\s+prospects")
+        mailable = find_number_before_label(w_start, w_end, r"mailable\s+prospects")
+        rate = find_percent_mailable(w_start, w_end)
+        if total is None and mailable is None and rate is None:
+            continue
+        out.append(
+            {
+                "list_name": ln,
+                "total_prospects": total,
+                "mailable_prospects": mailable,
+                "mailable_rate": rate,
+            }
+        )
+
+    if not out:
+        return []
+    df = pd.DataFrame(out).drop_duplicates(subset=["list_name"], keep="first")
+    return df.to_dict(orient="records")
 
 
 def parse_regs(text: str, api_key: str, model: str, temp: float):
     rows = _extract_regs_rulebased(text)
-    if len(rows) > 0:
-        return pd.DataFrame(rows), "", True
-    # Fallback to LLM parse for non-standard dumps; trim very large payloads for responsiveness.
-    payload = (text or "")[:12000]
-    p, raw, err = api_structured(api_key, model, temp, RegistrantList, "Extract registrants array.", payload)
-    return (pd.DataFrame([x.model_dump() for x in p.registrants]), "", True) if p else (pd.DataFrame(), f"{err}\nRaw:\n{raw}", False)
+    rows += _extract_regs_salesforce_regex(text)
+    if rows:
+        df = pd.DataFrame(rows)
+        for col in ["name", "company", "score", "last_submitted", "last_activity"]:
+            if col not in df.columns:
+                df[col] = None
+        for c in ["name", "company", "last_submitted", "last_activity"]:
+            df[c] = df[c].apply(lambda v: _norm_ws(v) if isinstance(v, str) else v)
+        df["score"] = pd.to_numeric(df["score"], errors="coerce")
+        df = df.dropna(subset=["name"])
+        df = df[~df["name"].str.lower().str.contains(r"tagstools|actions|all prospects|filter|view:", na=False)]
+        df = df.drop_duplicates(subset=["name", "company", "last_submitted"], keep="first")
+        return df[["name", "company", "score", "last_submitted", "last_activity"]], "", True
+    list_rows = _extract_regs_list_summaries(text)
+    if list_rows:
+        df = pd.DataFrame(list_rows)
+        return df[["list_name", "total_prospects", "mailable_prospects", "mailable_rate"]], "", True
+    return pd.DataFrame(), "Could not detect registrant rows from this raw export. Try including the table section with Name/Company/Score/Joined/Created.", False
 
 
 def parse_survey_text(text: str, api_key: str, model: str, temp: float):
