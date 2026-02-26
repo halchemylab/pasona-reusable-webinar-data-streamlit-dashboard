@@ -602,18 +602,49 @@ def render_exec_summary_tab(api_key: str, model: str, temp: float) -> None:
         emails_df = st.session_state["parsed_emails_df"]
         landing = st.session_state["landing_metrics_dict"] or {}
         social = st.session_state["social_metrics_dict"] or {}
+        regs_df = st.session_state["registrants_df"]
         survey = st.session_state["survey_derived"] or {}
-        avg_open = pd.to_numeric(emails_df.get("open_rate"), errors="coerce").mean() if not emails_df.empty else None
-        landing_views = int(to_int(landing.get("views")) or 0)
-        li_imp = int(to_int((social.get("linkedin") or {}).get("impressions")) or 0)
-        fb_views = int(to_int((social.get("facebook") or {}).get("views")) or 0)
+        sent = int(pd.to_numeric(emails_df.get("total_sent"), errors="coerce").fillna(0).sum()) if not emails_df.empty else 0
+        delivered = int(pd.to_numeric(emails_df.get("total_delivered"), errors="coerce").fillna(0).sum()) if not emails_df.empty else 0
+        opens = int(pd.to_numeric(emails_df.get("unique_opens"), errors="coerce").fillna(0).sum()) if not emails_df.empty else 0
+        clicks = int(pd.to_numeric(emails_df.get("unique_clicks"), errors="coerce").fillna(0).sum()) if not emails_df.empty else 0
+        landing_visits = int(to_int(landing.get("views")) or 0)
         consult_yes = int(to_int(survey.get("consult_yes_count")) or 0)
 
-        k1, k2, k3, k4 = st.columns(4)
-        k1.metric("Email Avg Open", f"{avg_open:.2f}%" if avg_open is not None else "N/A")
-        k2.metric("Landing Views", f"{landing_views:,}")
-        k3.metric("Organic Reach", f"{li_imp + fb_views:,}")
-        k4.metric("Consultation Leads", f"{consult_yes:,}")
+        if sent <= 0 and delivered > 0:
+            sent = delivered
+        if opens <= 0 and delivered > 0:
+            avg_open = pd.to_numeric(emails_df.get("open_rate"), errors="coerce").mean()
+            if pd.notna(avg_open):
+                opens = int(round(delivered * float(avg_open) / 100.0))
+        if clicks <= 0 and delivered > 0:
+            avg_ctr = pd.to_numeric(emails_df.get("unique_ctr"), errors="coerce").mean()
+            if pd.notna(avg_ctr):
+                clicks = int(round(delivered * float(avg_ctr) / 100.0))
+
+        registrations = 0
+        attendance = None
+        if not regs_df.empty:
+            if "name" in regs_df.columns:
+                registrations = int(regs_df["name"].fillna("").astype(str).str.strip().ne("").sum())
+                if "score" in regs_df.columns:
+                    scores = pd.to_numeric(regs_df["score"], errors="coerce")
+                    if len(scores.dropna()) > 0:
+                        attendance = int((scores.fillna(0) > 0).sum())
+            elif "total_prospects" in regs_df.columns:
+                registrations = int(pd.to_numeric(regs_df["total_prospects"], errors="coerce").fillna(0).sum())
+
+        st.markdown("#### Full Funnel")
+        st.caption("Email Sent -> Open -> Click -> Landing Visit -> Registration -> Attendance -> Consultation Lead")
+        r1c1, r1c2, r1c3, r1c4 = st.columns(4)
+        r1c1.metric("Email Sent", f"{sent:,}")
+        r1c2.metric("Open", f"{opens:,}")
+        r1c3.metric("Click", f"{clicks:,}")
+        r1c4.metric("Landing Visit", f"{landing_visits:,}")
+        r2c1, r2c2, r2c3 = st.columns(3)
+        r2c1.metric("Registration", f"{registrations:,}")
+        r2c2.metric("Attendance", f"{attendance:,}" if attendance is not None else "N/A")
+        r2c3.metric("Consultation Lead", f"{consult_yes:,}")
 
         sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+|\n+", summary_text) if s.strip()]
         highlights = sentences[:4]
