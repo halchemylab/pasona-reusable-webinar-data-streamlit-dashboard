@@ -1,9 +1,61 @@
 import json
 import time
+import hashlib
+from pathlib import Path
 from typing import Optional, Type
 
 from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI, RateLimitError
 from pydantic import BaseModel, ValidationError
+
+CACHE_FILE = Path("data/api_cache.json")
+MAX_CACHE_ENTRIES = 500
+
+
+def _cache_key(model: str, temp: float, schema: dict, sys: str, usr: str) -> str:
+    payload = {
+        "model": model,
+        "temp": round(float(temp), 3),
+        "schema": schema,
+        "system": sys,
+        "user": usr,
+    }
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _load_cache() -> dict:
+    try:
+        if not CACHE_FILE.exists():
+            return {}
+        return json.loads(CACHE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _save_cache(cache: dict) -> None:
+    try:
+        CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        CACHE_FILE.write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _cache_get(key: str) -> Optional[str]:
+    cache = _load_cache()
+    entry = cache.get(key)
+    if isinstance(entry, dict):
+        raw = entry.get("raw")
+        return raw if isinstance(raw, str) else None
+    return None
+
+
+def _cache_put(key: str, raw: str) -> None:
+    cache = _load_cache()
+    cache[key] = {"raw": raw, "saved_at": int(time.time())}
+    if len(cache) > MAX_CACHE_ENTRIES:
+        ordered = sorted(cache.items(), key=lambda kv: kv[1].get("saved_at", 0))
+        cache = dict(ordered[-MAX_CACHE_ENTRIES:])
+    _save_cache(cache)
 
 
 def _should_send_temperature(model: str, temp: float) -> bool:
@@ -35,10 +87,18 @@ def _api_error_message(err: Exception, attempt: int, retries: int) -> str:
 def api_structured(api_key: str, model: str, temp: float, schema_model: Type[BaseModel], sys: str, usr: str):
     client = OpenAI(api_key=api_key, timeout=20.0)
     schema = schema_model.model_json_schema()
+    key = _cache_key(model, temp, schema, sys, usr)
     raw: Optional[str] = None
     retries = 1
     last_err = None
     send_temp = _should_send_temperature(model, temp)
+    cached_raw = _cache_get(key)
+    if cached_raw:
+        try:
+            parsed = schema_model.model_validate(json.loads(cached_raw))
+            return parsed, cached_raw, None
+        except Exception:
+            pass
     for attempt in range(retries + 1):
         try:
             if hasattr(client, "responses"):
@@ -75,6 +135,8 @@ def api_structured(api_key: str, model: str, temp: float, schema_model: Type[Bas
                 message = getattr(first, "message", None)
                 raw = (getattr(message, "content", None) or "").strip()
             parsed = schema_model.model_validate(json.loads(raw))
+            if raw:
+                _cache_put(key, raw)
             return parsed, raw, None
         except (APITimeoutError, APIConnectionError, RateLimitError, APIStatusError) as e:
             if isinstance(e, APIStatusError):
