@@ -33,10 +33,10 @@ def _api_error_message(err: Exception, attempt: int, retries: int) -> str:
 
 
 def api_structured(api_key: str, model: str, temp: float, schema_model: Type[BaseModel], sys: str, usr: str):
-    client = OpenAI(api_key=api_key, timeout=45.0)
+    client = OpenAI(api_key=api_key, timeout=20.0)
     schema = schema_model.model_json_schema()
     raw: Optional[str] = None
-    retries = 2
+    retries = 1
     last_err = None
     send_temp = _should_send_temperature(model, temp)
     for attempt in range(retries + 1):

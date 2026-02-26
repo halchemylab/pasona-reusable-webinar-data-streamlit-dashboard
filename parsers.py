@@ -171,12 +171,61 @@ def parse_emails(text: str, api_key: str, model: str, temp: float):
 
 
 def parse_landing(text: str, api_key: str, model: str, temp: float):
+    t = (text or "").strip()
+    if t:
+        d = {
+            "views": to_int(_find_group(t, r"Views\s+([\d,]+)")),
+            "active_users": to_int(_find_group(t, r"Active\s+users\s+([\d,]+)")),
+            "views_per_user": to_float(_find_group(t, r"Views\s+per\s+active\s+user\s+([\d.]+)")),
+            "avg_engagement_seconds": to_float(_find_group(t, r"Average\s+engagement\s+time\s+per\s+active\s+user\s+([\d.]+)\s*s?")),
+            "event_count": to_int(_find_group(t, r"Event\s+count(?:\s+\(All\s+events\))?\s+([\d,]+)")),
+            "jp_views": to_int(_find_group(t, r"JP\s+views\s+([\d,]+)")),
+            "en_views": to_int(_find_group(t, r"EN\s+views\s+([\d,]+)")),
+        }
+        if sum(v is not None for v in d.values()) >= 3:
+            return d, "", True
     p, raw, err = api_structured(api_key, model, temp, LandingMetrics, "Extract landing metrics. Missing -> null.", text)
     return (p.model_dump(), "", True) if p else ({}, f"{err}\nRaw:\n{raw}", False)
 
 
+def _extract_regs_rulebased(text: str):
+    rows = []
+    for ln in (text or "").splitlines():
+        line = ln.strip()
+        if not line:
+            continue
+        if ":" not in line:
+            continue
+        parts = [p.strip() for p in re.split(r"\s*\|\s*", line) if p.strip()]
+        rec: Dict[str, Any] = {}
+        for p in parts:
+            if ":" not in p:
+                continue
+            k, v = p.split(":", 1)
+            key = re.sub(r"\s+", " ", k.strip().lower())
+            val = v.strip()
+            if "name" in key and "company" not in key:
+                rec["name"] = val or None
+            elif "company" in key:
+                rec["company"] = val or None
+            elif "score" in key:
+                rec["score"] = to_float(val)
+            elif "last submitted" in key:
+                rec["last_submitted"] = val or None
+            elif "last activity" in key:
+                rec["last_activity"] = val or None
+        if rec:
+            rows.append(rec)
+    return rows
+
+
 def parse_regs(text: str, api_key: str, model: str, temp: float):
-    p, raw, err = api_structured(api_key, model, temp, RegistrantList, "Extract registrants array.", text)
+    rows = _extract_regs_rulebased(text)
+    if len(rows) > 0:
+        return pd.DataFrame(rows), "", True
+    # Fallback to LLM parse for non-standard dumps; trim very large payloads for responsiveness.
+    payload = (text or "")[:12000]
+    p, raw, err = api_structured(api_key, model, temp, RegistrantList, "Extract registrants array.", payload)
     return (pd.DataFrame([x.model_dump() for x in p.registrants]), "", True) if p else (pd.DataFrame(), f"{err}\nRaw:\n{raw}", False)
 
 
