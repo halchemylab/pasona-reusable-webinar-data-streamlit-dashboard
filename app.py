@@ -452,6 +452,7 @@ with t3:
         st.dataframe(pd.DataFrame([li, fb]), use_container_width=True)
 
 with t4:
+    st.markdown("### Registrants + Attendees")
     txt = st.text_area("Paste registrant/attendee text", height=220, placeholder="Paste registrants/attendees export text here...")
     with st.expander("Example paste format"):
         st.code("Name: A | Company: X | Score: 10 | Last Submitted: 2025-11-01\nName: B | Company: Y | Score: 8 | Last Submitted: 2025-11-02")
@@ -472,24 +473,87 @@ with t4:
     df = st.session_state["registrants_df"]
     if not df.empty:
         st.dataframe(df, use_container_width=True)
-        if "last_submitted" in df.columns:
-            x = df.copy()
-            x["d"] = pd.to_datetime(x["last_submitted"], errors="coerce").dt.date
-            by = x.dropna(subset=["d"]).groupby("d").size().reset_index(name="count").sort_values("d")
-            if not by.empty:
-                fig, ax = plt.subplots()
-                ax.plot(by["d"].astype(str), by["count"], marker="o")
-                ax.set_title("Registrations Over Time")
-                ax.tick_params(axis="x", rotation=45)
-                st.pyplot(fig)
-        if "company" in df.columns:
-            top = df["company"].astype(str).str.strip().replace({"": pd.NA, "nan": pd.NA}).dropna().value_counts().head(10)
+        x = df.copy()
+        if "last_submitted" in x.columns:
+            x["submitted_dt"] = pd.to_datetime(x["last_submitted"], errors="coerce")
+        else:
+            x["submitted_dt"] = pd.NaT
+        x["score_num"] = pd.to_numeric(x.get("score"), errors="coerce")
+        if "company" in x.columns:
+            x["company_clean"] = x["company"].astype(str).str.strip().replace({"": pd.NA, "nan": pd.NA})
+        else:
+            x["company_clean"] = pd.NA
+
+        total_regs = len(x)
+        unique_companies = int(x["company_clean"].dropna().nunique())
+        median_score = float(x["score_num"].median()) if len(x["score_num"].dropna()) > 0 else None
+        dated = x.dropna(subset=["submitted_dt"])
+        day_span = max((dated["submitted_dt"].max() - dated["submitted_dt"].min()).days + 1, 1) if not dated.empty else 1
+        avg_daily = (len(dated) / day_span) if not dated.empty else 0
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Total Registrants", f"{total_regs:,}")
+        c2.metric("Unique Companies", f"{unique_companies:,}")
+        c3.metric("Median Score", f"{median_score:.1f}" if median_score is not None else "N/A")
+        c4.metric("Avg Registrations/Day", f"{avg_daily:.2f}")
+
+        left, right = st.columns([1.3, 1])
+        with left:
+            if not dated.empty:
+                by_day = dated.groupby(dated["submitted_dt"].dt.date).size().reset_index(name="count")
+                by_day.columns = ["date", "count"]
+                line = (
+                    alt.Chart(by_day)
+                    .mark_area(line={"color": "#2563eb"}, color="#93c5fd", opacity=0.45)
+                    .encode(
+                        x=alt.X("date:T", title="Date"),
+                        y=alt.Y("count:Q", title="Registrations"),
+                        tooltip=[alt.Tooltip("date:T"), "count:Q"],
+                    )
+                    .properties(height=300, title="Registrations Over Time")
+                )
+                st.altair_chart(line, use_container_width=True)
+            else:
+                st.info("Include `last_submitted` values to render trend chart.")
+        with right:
+            top = x["company_clean"].dropna().value_counts().head(10).reset_index()
             if not top.empty:
-                fig, ax = plt.subplots()
-                ax.bar(top.index, top.values)
-                ax.set_title("Top Companies by Registrant Count")
-                ax.tick_params(axis="x", rotation=45)
-                st.pyplot(fig)
+                top.columns = ["company", "count"]
+                bars = (
+                    alt.Chart(top)
+                    .mark_bar(cornerRadiusEnd=5, color="#10b981")
+                    .encode(
+                        y=alt.Y("company:N", sort="-x", title=""),
+                        x=alt.X("count:Q", title="Registrants"),
+                        tooltip=["company:N", "count:Q"],
+                    )
+                    .properties(height=300, title="Top Companies")
+                )
+                st.altair_chart(bars, use_container_width=True)
+            else:
+                st.info("No company field found for top-company chart.")
+
+        st.markdown("#### Data Science View: Weekly Cohort Heatmap")
+        if not dated.empty:
+            heat = dated.copy()
+            heat["week"] = heat["submitted_dt"].dt.to_period("W").astype(str)
+            heat["weekday"] = heat["submitted_dt"].dt.day_name()
+            order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+            heat_map = heat.groupby(["week", "weekday"]).size().reset_index(name="count")
+            heat_chart = (
+                alt.Chart(heat_map)
+                .mark_rect()
+                .encode(
+                    x=alt.X("week:N", title="Week Cohort"),
+                    y=alt.Y("weekday:N", sort=order, title=""),
+                    color=alt.Color("count:Q", scale=alt.Scale(scheme="blues"), title="Registrants"),
+                    tooltip=["week:N", "weekday:N", "count:Q"],
+                )
+                .properties(height=260)
+            )
+            st.altair_chart(heat_chart, use_container_width=True)
+        else:
+            st.info("Need date data to build cohort heatmap.")
 
 with t5:
     up = st.file_uploader("Upload MS Forms CSV", type=["csv"])
