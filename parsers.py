@@ -609,15 +609,65 @@ def exec_summary(
 ):
     payload: Dict[str, Any] = {}
     if not emails_df.empty:
-        payload["emails"] = emails_df.fillna("").to_dict(orient="records")
+        sent = int(pd.to_numeric(emails_df.get("total_sent"), errors="coerce").fillna(0).sum())
+        delivered = int(pd.to_numeric(emails_df.get("total_delivered"), errors="coerce").fillna(0).sum())
+        opens = int(pd.to_numeric(emails_df.get("unique_opens"), errors="coerce").fillna(0).sum())
+        clicks = int(pd.to_numeric(emails_df.get("unique_clicks"), errors="coerce").fillna(0).sum())
+        payload["email_kpis"] = {
+            "email_count": int(len(emails_df)),
+            "sent": sent if sent > 0 else delivered,
+            "delivered": delivered,
+            "open": opens,
+            "click": clicks,
+            "avg_open_rate": to_float(pd.to_numeric(emails_df.get("open_rate"), errors="coerce").mean()),
+            "avg_unique_ctr": to_float(pd.to_numeric(emails_df.get("unique_ctr"), errors="coerce").mean()),
+        }
     if landing:
-        payload["landing"] = landing
+        payload["landing_kpis"] = {
+            "views": to_int(landing.get("views")),
+            "active_users": to_int(landing.get("active_users")),
+            "views_per_user": to_float(landing.get("views_per_user")),
+            "avg_engagement_seconds": to_float(landing.get("avg_engagement_seconds")),
+            "jp_views": to_int(landing.get("jp_views")),
+            "en_views": to_int(landing.get("en_views")),
+        }
     if social:
-        payload["social_organic"] = social
+        li = social.get("linkedin") or {}
+        fb = social.get("facebook") or {}
+        payload["social_kpis"] = {
+            "linkedin_impressions": to_int(li.get("impressions")),
+            "linkedin_engagements": to_int(li.get("engagements")),
+            "linkedin_clicks": to_int(li.get("clicks")),
+            "facebook_views": to_int(fb.get("views")),
+            "facebook_engagements": to_int(fb.get("engagements")),
+            "facebook_link_clicks": to_int(fb.get("link_clicks")),
+        }
     if not regs_df.empty:
-        payload["registrants"] = regs_df.fillna("").to_dict(orient="records")
+        reg_count = int(len(regs_df))
+        if "name" in regs_df.columns:
+            reg_count = int(regs_df["name"].fillna("").astype(str).str.strip().ne("").sum())
+        company_count = int(regs_df["company"].astype(str).str.strip().replace({"": pd.NA, "nan": pd.NA}).dropna().nunique()) if "company" in regs_df.columns else 0
+        attendance = None
+        if "score" in regs_df.columns:
+            scores = pd.to_numeric(regs_df["score"], errors="coerce")
+            if len(scores.dropna()) > 0:
+                attendance = int((scores.fillna(0) > 0).sum())
+        payload["registrant_kpis"] = {
+            "registration": reg_count,
+            "attendance": attendance,
+            "unique_companies": company_count,
+        }
     if survey:
-        payload["survey"] = survey
+        top_themes = []
+        for t in (survey.get("top_themes") or [])[:5]:
+            top_themes.append({"theme": str(t.get("theme", "")), "count": to_int(t.get("count"))})
+        payload["survey_kpis"] = {
+            "responses": to_int(survey.get("n_responses")),
+            "avg_value_rating": to_float((survey.get("value_rating_stats") or {}).get("avg")),
+            "consultation_leads": to_int(survey.get("consult_yes_count")),
+            "consultation_no": to_int(survey.get("consult_no_count")),
+            "top_themes": top_themes,
+        }
     if not payload:
         return "", "No parsed data available yet."
     p, raw, err = api_structured(
@@ -625,7 +675,7 @@ def exec_summary(
         model,
         temp,
         ExecSummaryText,
-        "Write concise 1-2 paragraph management-ready summary. Omit missing sections.",
+        "Write concise 1-2 paragraph management-ready summary from KPI aggregates only. Mention funnel progression when available. Omit missing sections.",
         json.dumps(payload, ensure_ascii=False),
     )
     return (p.summary.strip(), "") if p else ("", f"{err}\nRaw:\n{raw}")
