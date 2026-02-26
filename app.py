@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 
 from parsers import exec_summary, parse_emails, parse_landing, parse_regs, parse_social, parse_survey_csv, parse_survey_text
 from snapshot_store import append_snapshot_row, build_snapshot_row, has_snapshot_data
-from usage_store import init_state, load_usage, usage_success
+from usage_store import init_state, load_usage, webinar_saved_success
 from utils import clip_snippet, to_float, to_int
 
 load_dotenv()
@@ -25,14 +25,13 @@ if not st.session_state["usage_loaded"]:
 
 st.title("Webinar Marketing Analytics Dashboard")
 with st.sidebar:
-    t = int(st.session_state["times_used"])
-    h, m = divmod(t * 30, 60)
+    t = int(st.session_state["webinars_saved"])
     with st.container(border=True):
-        st.metric("Times Used", f"{t}")
+        st.metric("Webinars Saved", f"{t}")
     with st.container(border=True):
-        st.metric("Time Saved", f"{h}h {m}m")
+        st.metric("Time Saved", f"{t}h")
     with st.container(border=True):
-        st.metric("Money Saved", f"${t * 15:,.0f}")
+        st.metric("Money Saved", f"${t * 45:,.0f}")
     st.divider()
     st.subheader("LLM Settings")
     key_override = st.text_input("OpenAI API Key (override)", type="password", placeholder="sk-...")
@@ -64,6 +63,7 @@ with st.sidebar:
         else:
             row = build_snapshot_row(webinar_name, emails_df, landing, social, regs_df, survey, summary)
             path = append_snapshot_row(row)
+            webinar_saved_success()
             st.success(f"Saved snapshot to {path}")
 
 tabs = st.tabs(["Emails", "Landing Page", "Social Media (Organic)", "Registrants + Attendees", "Survey (MS Forms)", "Executive Summary"])
@@ -82,7 +82,6 @@ with t1:
             df, dbg, ok = parse_emails(txt, api_key, model, temp)
             if ok:
                 st.session_state["parsed_emails_df"] = df
-                usage_success()
                 st.success("Email reports parsed successfully.")
             else:
                 st.error("Email parsing failed.")
@@ -130,7 +129,6 @@ with t2:
             d, dbg, ok = parse_landing(txt, api_key, model, temp)
             if ok:
                 st.session_state["landing_metrics_dict"] = d
-                usage_success()
                 st.success("Landing page metrics parsed successfully.")
             else:
                 st.error("Landing parse failed.")
@@ -160,7 +158,6 @@ with t3:
             d, dbg, ok = parse_social(li_txt, fb_txt)
             if ok:
                 st.session_state["social_metrics_dict"] = d
-                usage_success()
                 st.success("Social media metrics parsed successfully.")
             else:
                 st.error("Social media parse failed.")
@@ -195,7 +192,6 @@ with t4:
             df, dbg, ok = parse_regs(txt, api_key, model, temp)
             if ok:
                 st.session_state["registrants_df"] = df
-                usage_success()
                 st.success("Registrant data parsed successfully.")
             else:
                 st.error("Registrant parse failed.")
@@ -242,7 +238,6 @@ with t5:
                 if ok:
                     st.session_state["survey_derived"] = d
                     st.session_state["survey_tables"] = tables
-                    usage_success()
                     st.success("Survey CSV parsed successfully.")
                 else:
                     st.error("Survey parse failed.")
@@ -255,7 +250,6 @@ with t5:
             if ok:
                 st.session_state["survey_derived"] = d
                 st.session_state["survey_tables"] = {}
-                usage_success()
                 st.success("Survey text parsed successfully.")
             else:
                 st.error("Survey parse failed.")

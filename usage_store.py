@@ -16,7 +16,7 @@ def init_state() -> None:
         "survey_derived": {},
         "survey_tables": {},
         "exec_summary_text": "",
-        "times_used": 0,
+        "webinars_saved": 0,
         "usage_persist_ok": True,
         "usage_loaded": False,
     }
@@ -28,7 +28,8 @@ def init_state() -> None:
 def load_usage() -> None:
     try:
         if USAGE_FILE.exists():
-            st.session_state["times_used"] = int(json.loads(USAGE_FILE.read_text(encoding="utf-8")).get("times_used", 0))
+            raw = json.loads(USAGE_FILE.read_text(encoding="utf-8"))
+            st.session_state["webinars_saved"] = int(raw.get("webinars_saved", raw.get("times_used", 0)))
         st.session_state["usage_persist_ok"] = True
     except Exception:
         st.session_state["usage_persist_ok"] = False
@@ -36,13 +37,13 @@ def load_usage() -> None:
 
 def save_usage() -> None:
     try:
-        USAGE_FILE.write_text(json.dumps({"times_used": int(st.session_state["times_used"])}, indent=2), encoding="utf-8")
+        USAGE_FILE.write_text(json.dumps({"webinars_saved": int(st.session_state["webinars_saved"])}, indent=2), encoding="utf-8")
         st.session_state["usage_persist_ok"] = True
     except Exception:
         st.session_state["usage_persist_ok"] = False
 
 
-def usage_success() -> None:
-    st.session_state["times_used"] = int(st.session_state.get("times_used", 0)) + 1
+def webinar_saved_success() -> None:
+    st.session_state["webinars_saved"] = int(st.session_state.get("webinars_saved", 0)) + 1
     if st.session_state.get("usage_persist_ok", True):
         save_usage()
