@@ -556,6 +556,7 @@ with t4:
             st.info("Need date data to build cohort heatmap.")
 
 with t5:
+    st.markdown("### Survey Insights")
     up = st.file_uploader("Upload MS Forms CSV", type=["csv"])
     txt = st.text_area("Or paste survey text", height=180, placeholder="Paste survey text here if CSV is not available...")
     with st.expander("Example paste format"):
@@ -604,20 +605,87 @@ with t5:
         c1.metric("Total Responses", f"{n:,}")
         c2.metric("Avg Value Rating (Q9)", f"{avg:.2f}" if avg is not None else "N/A")
         c3.metric("Consultation Yes Rate", f"{rate:.1f}%" if rate is not None else "N/A")
-        for title, key, xname in [
-            ("Value Rating Distribution (Q9)", "distribution_counts", "rating"),
-            ("Job Function Distribution (Q6)", "job_function_counts", "job_function"),
-            ("Job Level Distribution (Q7)", "job_level_counts", "job_level"),
-            ("Industry Distribution (Q8) Top 10 + Other", "industry_counts", "industry"),
+
+        row1_l, row1_r = st.columns([1.3, 1])
+        with row1_l:
+            dist = (d.get("value_rating_stats") or {}).get("distribution_counts", {})
+            if dist:
+                q9 = pd.DataFrame({"rating": [str(k) for k in dist.keys()], "count": list(dist.values())})
+                q9["rating_num"] = pd.to_numeric(q9["rating"], errors="coerce")
+                q9 = q9.sort_values("rating_num")
+                q9_chart = (
+                    alt.Chart(q9)
+                    .mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4, color="#2563eb")
+                    .encode(
+                        x=alt.X("rating:N", title="Rating"),
+                        y=alt.Y("count:Q", title="Responses"),
+                        tooltip=["rating:N", "count:Q"],
+                    )
+                    .properties(height=280, title="Q9 Value Rating Distribution")
+                )
+                st.altair_chart(q9_chart, use_container_width=True)
+            else:
+                st.info("Q9 rating distribution not available.")
+        with row1_r:
+            yn = pd.DataFrame({"answer": ["Yes", "No"], "count": [y, n0]})
+            if yn["count"].sum() > 0:
+                yn_chart = (
+                    alt.Chart(yn)
+                    .mark_arc(innerRadius=52, outerRadius=90)
+                    .encode(
+                        theta=alt.Theta("count:Q"),
+                        color=alt.Color("answer:N", scale=alt.Scale(domain=["Yes", "No"], range=["#10b981", "#ef4444"])),
+                        tooltip=["answer:N", "count:Q"],
+                    )
+                    .properties(height=280, title="Consultation Intent Mix")
+                )
+                st.altair_chart(yn_chart, use_container_width=True)
+            else:
+                st.info("Consultation yes/no values not available.")
+
+        for title, key, xname, color in [
+            ("Job Function Distribution (Q6)", "job_function_counts", "job_function", "#10b981"),
+            ("Job Level Distribution (Q7)", "job_level_counts", "job_level", "#f59e0b"),
+            ("Industry Distribution (Q8)", "industry", "industry", "#6366f1"),
         ]:
-            src = (d.get("value_rating_stats") or {}).get(key, {}) if key == "distribution_counts" else d.get(key, {})
+            src = d.get(key, {}) if key != "industry" else d.get("industry_counts", {})
             if src:
                 z = pd.DataFrame({xname: list(src.keys()), "count": list(src.values())})
-                fig, ax = plt.subplots()
-                ax.bar(z[xname].astype(str), z["count"])
-                ax.set_title(title)
-                ax.tick_params(axis="x", rotation=45)
-                st.pyplot(fig)
+                z[xname] = z[xname].astype(str)
+                z = z.sort_values("count", ascending=False).head(12)
+                chart = (
+                    alt.Chart(z)
+                    .mark_bar(cornerRadiusEnd=5, color=color)
+                    .encode(
+                        y=alt.Y(f"{xname}:N", sort="-x", title=""),
+                        x=alt.X("count:Q", title="Responses"),
+                        tooltip=[f"{xname}:N", "count:Q"],
+                    )
+                    .properties(height=260, title=title)
+                )
+                st.altair_chart(chart, use_container_width=True)
+
+        st.markdown("#### Data Science View: Industry Response Concentration")
+        ind = d.get("industry_counts", {})
+        if ind and sum(ind.values()) > 0:
+            conc = pd.DataFrame({"industry": list(ind.keys()), "count": list(ind.values())}).sort_values("count", ascending=False).reset_index(drop=True)
+            conc["rank"] = conc.index + 1
+            conc["share"] = conc["count"] / conc["count"].sum()
+            conc["cum_share"] = conc["share"].cumsum()
+            conc_chart = (
+                alt.Chart(conc)
+                .mark_line(point=True, color="#2563eb")
+                .encode(
+                    x=alt.X("rank:Q", title="Industry Rank (largest to smallest)"),
+                    y=alt.Y("cum_share:Q", axis=alt.Axis(format="%"), title="Cumulative Share"),
+                    tooltip=["industry:N", "count:Q", alt.Tooltip("cum_share:Q", format=".1%")],
+                )
+                .properties(height=300)
+            )
+            st.altair_chart(conc_chart, use_container_width=True)
+        else:
+            st.info("Need industry distribution data for concentration analysis.")
+
         st.markdown("### Qualitative Insights")
         fs = d.get("free_text_summaries", {})
         for q in ["Q10", "Q11", "Q12", "Q14"]:
