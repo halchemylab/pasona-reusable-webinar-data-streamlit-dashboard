@@ -11,6 +11,7 @@ def init_state() -> None:
     d = {
         "parsed_emails_df": pd.DataFrame(),
         "landing_metrics_dict": {},
+        "social_metrics_dict": {},
         "registrants_df": pd.DataFrame(),
         "survey_derived": {},
         "survey_tables": {},

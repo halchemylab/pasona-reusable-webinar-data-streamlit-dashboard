@@ -91,6 +91,56 @@ def _extract_email_metrics(block: str, idx: int) -> Dict[str, Any]:
     return d
 
 
+def _extract_social_platform(text: str, platform: str) -> Dict[str, Any]:
+    t = (text or "").strip()
+    if not t:
+        return {}
+
+    def fg(pattern: str):
+        m = re.search(pattern, t, flags=re.I)
+        return m.group(1).strip() if m else None
+
+    out: Dict[str, Any] = {"platform": platform}
+    if platform == "linkedin":
+        out.update(
+            {
+                "impressions": to_int(fg(r"Organic\s+discovery\s+([\d,]+)") or fg(r"Impressions\s+([\d,]+)") or fg(r"([\d,]+)\s+Impressions")),
+                "members_reached": to_int(fg(r"Members\s+reached\s+([\d,]+)") or fg(r"([\d,]+)\s+Members\s+reached")),
+                "engagements": to_int(fg(r"Organic\s+engagement\s+([\d,]+)") or fg(r"Engagements\s+([\d,]+)\b")),
+                "engagement_rate": to_float(fg(r"Engagement\s+rate\s+([\d.]+)%?") or fg(r"([\d.]+)%\s+Engagement\s+rate")),
+                "clicks": to_int(fg(r"Clicks\s+([\d,]+)")),
+                "ctr": to_float(fg(r"Click-through\s+rate\s+([\d.]+)%?") or fg(r"([\d.]+)%\s+Click-through\s+rate")),
+                "reactions": to_int(fg(r"Reactions\s+([\d,]+)")),
+                "comments": to_int(fg(r"Comments\s+([\d,]+)")),
+                "reposts": to_int(fg(r"Reposts\s+([\d,]+)")),
+                "page_viewers_from_post": to_int(fg(r"Page\s+viewers\s+from\s+this\s+post\s+([\d,]+)")),
+                "followers_gained": to_int(fg(r"Followers\s+gained\s+from\s+this\s+post\s+([\d,]+)")),
+            }
+        )
+    else:
+        out.update(
+            {
+                "views": to_int(fg(r"Views\s+(\d[\d,]*)")),
+                "viewers": to_int(fg(r"Viewers\s+(\d[\d,]*)")),
+                "engagements": to_int(fg(r"(\d[\d,]*)\s+Engagement")),
+                "link_clicks": to_int(fg(r"Link\s+clicks\s+(\d[\d,]*)")),
+                "followers_views": to_int(fg(r"Followers\s+(\d[\d,]*)")),
+                "non_followers_views": to_int(fg(r"Non-followers\s+(\d[\d,]*)")),
+                "net_follows": to_int(fg(r"Net\s+follows\s+(\d[\d,]*)")),
+            }
+        )
+    return {k: v for k, v in out.items() if v is not None or k == "platform"}
+
+
+def parse_social(linkedin_text: str, facebook_text: str):
+    li = _extract_social_platform(linkedin_text, "linkedin")
+    fb = _extract_social_platform(facebook_text, "facebook")
+    d = {"linkedin": li, "facebook": fb}
+    ok = (len(li.keys()) > 1) or (len(fb.keys()) > 1)
+    dbg = "" if ok else "No social metrics detected. Paste LinkedIn/Facebook post analytics text."
+    return d, dbg, ok
+
+
 def parse_emails(text: str, api_key: str, model: str, temp: float):
     blocks = _split_email_blocks(text)
     if not blocks:
@@ -225,12 +275,23 @@ def parse_survey_csv(df: pd.DataFrame, api_key: str, model: str, temp: float):
     return d, {}, "", True
 
 
-def exec_summary(api_key: str, model: str, temp: float, emails_df: pd.DataFrame, landing: Dict[str, Any], regs_df: pd.DataFrame, survey: Dict[str, Any]):
+def exec_summary(
+    api_key: str,
+    model: str,
+    temp: float,
+    emails_df: pd.DataFrame,
+    landing: Dict[str, Any],
+    social: Dict[str, Any],
+    regs_df: pd.DataFrame,
+    survey: Dict[str, Any],
+):
     payload: Dict[str, Any] = {}
     if not emails_df.empty:
         payload["emails"] = emails_df.fillna("").to_dict(orient="records")
     if landing:
         payload["landing"] = landing
+    if social:
+        payload["social_organic"] = social
     if not regs_df.empty:
         payload["registrants"] = regs_df.fillna("").to_dict(orient="records")
     if survey:

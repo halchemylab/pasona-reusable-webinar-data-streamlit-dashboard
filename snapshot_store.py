@@ -34,14 +34,17 @@ def _top_companies(regs_df: pd.DataFrame) -> Dict[str, int]:
     return {str(k): int(v) for k, v in top.to_dict().items()}
 
 
-def has_snapshot_data(emails_df: pd.DataFrame, landing: Dict[str, Any], regs_df: pd.DataFrame, survey: Dict[str, Any], exec_summary_text: str) -> bool:
-    return (not emails_df.empty) or bool(landing) or (not regs_df.empty) or bool(survey) or bool((exec_summary_text or "").strip())
+def has_snapshot_data(
+    emails_df: pd.DataFrame, landing: Dict[str, Any], social: Dict[str, Any], regs_df: pd.DataFrame, survey: Dict[str, Any], exec_summary_text: str
+) -> bool:
+    return (not emails_df.empty) or bool(landing) or bool(social) or (not regs_df.empty) or bool(survey) or bool((exec_summary_text or "").strip())
 
 
 def build_snapshot_row(
     webinar_name: str,
     emails_df: pd.DataFrame,
     landing: Dict[str, Any],
+    social: Dict[str, Any],
     regs_df: pd.DataFrame,
     survey: Dict[str, Any],
     exec_summary_text: str,
@@ -50,6 +53,7 @@ def build_snapshot_row(
     regs_records = regs_df.fillna("").to_dict(orient="records") if not regs_df.empty else []
     survey = survey or {}
     landing = landing or {}
+    social = social or {}
 
     email_open = pd.to_numeric(emails_df.get("open_rate"), errors="coerce") if not emails_df.empty else pd.Series(dtype=float)
     email_ctr = pd.to_numeric(emails_df.get("unique_ctr"), errors="coerce") if not emails_df.empty else pd.Series(dtype=float)
@@ -61,6 +65,7 @@ def build_snapshot_row(
         "webinar_name": webinar_name.strip(),
         "emails": emails_records,
         "landing": landing,
+        "social_organic": social,
         "registrants": regs_records,
         "survey": survey,
         "exec_summary_text": exec_summary_text or "",
@@ -83,6 +88,12 @@ def build_snapshot_row(
         "landing_avg_engagement_seconds": landing.get("avg_engagement_seconds"),
         "landing_jp_views": landing.get("jp_views"),
         "landing_en_views": landing.get("en_views"),
+        "social_linkedin_impressions": (social.get("linkedin") or {}).get("impressions"),
+        "social_linkedin_engagements": (social.get("linkedin") or {}).get("engagements"),
+        "social_linkedin_clicks": (social.get("linkedin") or {}).get("clicks"),
+        "social_facebook_views": (social.get("facebook") or {}).get("views"),
+        "social_facebook_engagements": (social.get("facebook") or {}).get("engagements"),
+        "social_facebook_link_clicks": (social.get("facebook") or {}).get("link_clicks"),
         "registrant_count": int(len(regs_records)),
         "top_companies_json": _to_json(_top_companies(regs_df)),
         "survey_n_responses": survey.get("n_responses"),
@@ -91,6 +102,7 @@ def build_snapshot_row(
         "survey_consult_no_count": survey.get("consult_no_count"),
         "emails_json": _to_json(emails_records),
         "landing_json": _to_json(landing),
+        "social_json": _to_json(social),
         "registrants_json": _to_json(regs_records),
         "survey_json": _to_json(survey),
         "consultation_leads_json": _to_json(survey.get("consult_yes_leads", [])),
@@ -103,6 +115,10 @@ def build_snapshot_row(
 def append_snapshot_row(row: Dict[str, Any]) -> Path:
     HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
     frame = pd.DataFrame([row])
-    exists = HISTORY_FILE.exists()
-    frame.to_csv(HISTORY_FILE, mode="a", index=False, header=not exists, encoding="utf-8-sig")
+    if HISTORY_FILE.exists():
+        existing = pd.read_csv(HISTORY_FILE, encoding="utf-8-sig")
+        merged = pd.concat([existing, frame], ignore_index=True, sort=False)
+        merged.to_csv(HISTORY_FILE, index=False, encoding="utf-8-sig")
+    else:
+        frame.to_csv(HISTORY_FILE, mode="a", index=False, header=True, encoding="utf-8-sig")
     return HISTORY_FILE

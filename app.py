@@ -5,7 +5,7 @@ import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 
-from parsers import exec_summary, parse_emails, parse_landing, parse_regs, parse_survey_csv, parse_survey_text
+from parsers import exec_summary, parse_emails, parse_landing, parse_regs, parse_social, parse_survey_csv, parse_survey_text
 from snapshot_store import append_snapshot_row, build_snapshot_row, has_snapshot_data
 from usage_store import init_state, load_usage, usage_success
 from utils import clip_snippet, to_float, to_int
@@ -43,6 +43,7 @@ with st.sidebar:
     if st.button("Clear Data", use_container_width=True):
         st.session_state["parsed_emails_df"] = pd.DataFrame()
         st.session_state["landing_metrics_dict"] = {}
+        st.session_state["social_metrics_dict"] = {}
         st.session_state["registrants_df"] = pd.DataFrame()
         st.session_state["survey_derived"] = {}
         st.session_state["survey_tables"] = {}
@@ -54,18 +55,19 @@ with st.sidebar:
     if st.button("Save Webinar Snapshot", use_container_width=True):
         emails_df = st.session_state["parsed_emails_df"]
         landing = st.session_state["landing_metrics_dict"]
+        social = st.session_state["social_metrics_dict"]
         regs_df = st.session_state["registrants_df"]
         survey = st.session_state["survey_derived"]
         summary = st.session_state.get("exec_summary_text", "")
-        if not has_snapshot_data(emails_df, landing, regs_df, survey, summary):
+        if not has_snapshot_data(emails_df, landing, social, regs_df, survey, summary):
             st.warning("Nothing to save yet. Parse at least one section first.")
         else:
-            row = build_snapshot_row(webinar_name, emails_df, landing, regs_df, survey, summary)
+            row = build_snapshot_row(webinar_name, emails_df, landing, social, regs_df, survey, summary)
             path = append_snapshot_row(row)
             st.success(f"Saved snapshot to {path}")
 
-tabs = st.tabs(["Emails", "Landing Page", "Registrants + Attendees", "Survey (MS Forms)", "Executive Summary"])
-t1, t2, t3, t4, t5 = tabs
+tabs = st.tabs(["Emails", "Landing Page", "Social Media (Organic)", "Registrants + Attendees", "Survey (MS Forms)", "Executive Summary"])
+t1, t2, t3, t4, t5, t6 = tabs
 
 with t1:
     txt = st.text_area("Paste email report text", height=220, placeholder="Paste Pardot Click-Through Rate Report text here...")
@@ -149,6 +151,38 @@ with t2:
             st.pyplot(fig)
 
 with t3:
+    li_txt = st.text_area("Paste LinkedIn post analytics text", height=180, placeholder="Paste LinkedIn organic post analytics text here...")
+    fb_txt = st.text_area("Paste Facebook post insights text", height=180, placeholder="Paste Facebook organic post insights text here...")
+    if st.button("Parse Social Media (Organic)"):
+        if not (li_txt.strip() or fb_txt.strip()):
+            st.warning("Please paste LinkedIn and/or Facebook analytics text.")
+        else:
+            d, dbg, ok = parse_social(li_txt, fb_txt)
+            if ok:
+                st.session_state["social_metrics_dict"] = d
+                usage_success()
+                st.success("Social media metrics parsed successfully.")
+            else:
+                st.error("Social media parse failed.")
+                with st.expander("Parser debug"):
+                    st.text(dbg)
+    s = st.session_state.get("social_metrics_dict", {})
+    li = s.get("linkedin", {}) or {}
+    fb = s.get("facebook", {}) or {}
+    if li or fb:
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("LinkedIn Impressions", f"{int(to_int(li.get('impressions')) or 0):,}")
+        c2.metric("LinkedIn Engagements", f"{int(to_int(li.get('engagements')) or 0):,}")
+        c3.metric("Facebook Views", f"{int(to_int(fb.get('views')) or 0):,}")
+        c4.metric("Facebook Link Clicks", f"{int(to_int(fb.get('link_clicks')) or 0):,}")
+        p1, p2, p3 = st.columns(3)
+        p1.metric("LinkedIn Engagement Rate", f"{(to_float(li.get('engagement_rate')) or 0):.2f}%")
+        p2.metric("LinkedIn CTR", f"{(to_float(li.get('ctr')) or 0):.2f}%")
+        p3.metric("Facebook Engagements", f"{int(to_int(fb.get('engagements')) or 0):,}")
+        st.markdown("### Parsed Social Metrics")
+        st.dataframe(pd.DataFrame([li, fb]), use_container_width=True)
+
+with t4:
     txt = st.text_area("Paste registrant/attendee text", height=220, placeholder="Paste registrants/attendees export text here...")
     with st.expander("Example paste format"):
         st.code("Name: A | Company: X | Score: 10 | Last Submitted: 2025-11-01\nName: B | Company: Y | Score: 8 | Last Submitted: 2025-11-02")
@@ -189,7 +223,7 @@ with t3:
                 ax.tick_params(axis="x", rotation=45)
                 st.pyplot(fig)
 
-with t4:
+with t5:
     up = st.file_uploader("Upload MS Forms CSV", type=["csv"])
     txt = st.text_area("Or paste survey text", height=180, placeholder="Paste survey text here if CSV is not available...")
     with st.expander("Example paste format"):
@@ -278,7 +312,7 @@ with t4:
         else:
             st.info("No consultation-yes leads found.")
 
-with t5:
+with t6:
     st.caption("Copy hint: click in the text area and copy.")
     if st.button("Generate Executive Summary"):
         if not api_key:
@@ -290,6 +324,7 @@ with t5:
                 temp,
                 st.session_state["parsed_emails_df"],
                 st.session_state["landing_metrics_dict"],
+                st.session_state["social_metrics_dict"],
                 st.session_state["registrants_df"],
                 st.session_state["survey_derived"],
             )
