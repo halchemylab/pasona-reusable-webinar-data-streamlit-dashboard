@@ -126,24 +126,31 @@ t1, t2, t3, t4, t5, t6 = tabs
 
 with t1:
     st.markdown("### Email Performance")
-    txt = st.text_area("Paste email report text", height=220, placeholder="Paste Pardot Click-Through Rate Report text here...")
-    with st.expander("Example paste format"):
-        st.code("Click-Through Rate Report\nName: Email A\nTotal Delivered: 500\nOpen Rate: 35.2%\nUnique CTR: 7.1%")
-    if st.button("Parse Emails"):
-        if not api_key:
-            st.error("API key missing. Set OPENAI_API_KEY or provide key in sidebar.")
-        elif not txt.strip():
-            st.warning("Please paste email report text.")
-        else:
-            df, dbg, ok = parse_emails(txt, api_key, model, temp)
-            if ok:
-                st.session_state["parsed_emails_df"] = df
-                st.success("Email reports parsed successfully.")
+    hide_email_input = st.toggle("Hide input section", key="hide_email_input")
+    if not hide_email_input:
+        txt = st.text_area(
+            "Paste email report text",
+            height=220,
+            placeholder="Paste Pardot Click-Through Rate Report text here...",
+            key="email_input_text",
+        )
+        with st.expander("Example paste format"):
+            st.code("Click-Through Rate Report\nName: Email A\nTotal Delivered: 500\nOpen Rate: 35.2%\nUnique CTR: 7.1%")
+        if st.button("Parse Emails"):
+            if not api_key:
+                st.error("API key missing. Set OPENAI_API_KEY or provide key in sidebar.")
+            elif not txt.strip():
+                st.warning("Please paste email report text.")
             else:
-                st.error("Email parsing failed.")
-                for d in dbg:
-                    with st.expander("Model output/debug"):
-                        st.text(d)
+                df, dbg, ok = parse_emails(txt, api_key, model, temp)
+                if ok:
+                    st.session_state["parsed_emails_df"] = df
+                    st.success("Email reports parsed successfully.")
+                else:
+                    st.error("Email parsing failed.")
+                    for d in dbg:
+                        with st.expander("Model output/debug"):
+                            st.text(d)
     df = st.session_state["parsed_emails_df"]
     if not df.empty:
         st.dataframe(df, use_container_width=True)
@@ -228,23 +235,30 @@ with t1:
 
 with t2:
     st.markdown("### Landing Page Performance")
-    txt = st.text_area("Paste landing page analytics text", height=220, placeholder="Paste GA4 landing page metrics here...")
-    with st.expander("Example paste format"):
-        st.code("Page path: /x\nViews: 1000\nActive users: 700\nViews per user: 1.4\nAvg engagement seconds: 52\nJP views: 600\nEN views: 400")
-    if st.button("Parse Landing Page"):
-        if not api_key:
-            st.error("API key missing. Set OPENAI_API_KEY or provide key in sidebar.")
-        elif not txt.strip():
-            st.warning("Please paste landing page analytics text.")
-        else:
-            d, dbg, ok = parse_landing(txt, api_key, model, temp)
-            if ok:
-                st.session_state["landing_metrics_dict"] = d
-                st.success("Landing page metrics parsed successfully.")
+    hide_landing_input = st.toggle("Hide input section", key="hide_landing_input")
+    if not hide_landing_input:
+        txt = st.text_area(
+            "Paste landing page analytics text",
+            height=220,
+            placeholder="Paste GA4 landing page metrics here...",
+            key="landing_input_text",
+        )
+        with st.expander("Example paste format"):
+            st.code("Page path: /x\nViews: 1000\nActive users: 700\nViews per user: 1.4\nAvg engagement seconds: 52\nJP views: 600\nEN views: 400")
+        if st.button("Parse Landing Page"):
+            if not api_key:
+                st.error("API key missing. Set OPENAI_API_KEY or provide key in sidebar.")
+            elif not txt.strip():
+                st.warning("Please paste landing page analytics text.")
             else:
-                st.error("Landing parse failed.")
-                with st.expander("Model output/debug"):
-                    st.text(dbg)
+                d, dbg, ok = parse_landing(txt, api_key, model, temp)
+                if ok:
+                    st.session_state["landing_metrics_dict"] = d
+                    st.success("Landing page metrics parsed successfully.")
+                else:
+                    st.error("Landing parse failed.")
+                    with st.expander("Model output/debug"):
+                        st.text(dbg)
     d = st.session_state["landing_metrics_dict"]
     if d:
         views = int(to_int(d.get("views")) or 0)
@@ -335,20 +349,32 @@ with t2:
 
 with t3:
     st.markdown("### Social Media (Organic)")
-    li_txt = st.text_area("Paste LinkedIn post analytics text", height=180, placeholder="Paste LinkedIn organic post analytics text here...")
-    fb_txt = st.text_area("Paste Facebook post insights text", height=180, placeholder="Paste Facebook organic post insights text here...")
-    if st.button("Parse Social Media (Organic)"):
-        if not (li_txt.strip() or fb_txt.strip()):
-            st.warning("Please paste LinkedIn and/or Facebook analytics text.")
-        else:
-            d, dbg, ok = parse_social(li_txt, fb_txt)
-            if ok:
-                st.session_state["social_metrics_dict"] = d
-                st.success("Social media metrics parsed successfully.")
+    hide_social_input = st.toggle("Hide input section", key="hide_social_input")
+    if not hide_social_input:
+        li_txt = st.text_area(
+            "Paste LinkedIn post analytics text",
+            height=180,
+            placeholder="Paste LinkedIn organic post analytics text here...",
+            key="social_linkedin_input_text",
+        )
+        fb_txt = st.text_area(
+            "Paste Facebook post insights text",
+            height=180,
+            placeholder="Paste Facebook organic post insights text here...",
+            key="social_facebook_input_text",
+        )
+        if st.button("Parse Social Media (Organic)"):
+            if not (li_txt.strip() or fb_txt.strip()):
+                st.warning("Please paste LinkedIn and/or Facebook analytics text.")
             else:
-                st.error("Social media parse failed.")
-                with st.expander("Parser debug"):
-                    st.text(dbg)
+                d, dbg, ok = parse_social(li_txt, fb_txt)
+                if ok:
+                    st.session_state["social_metrics_dict"] = d
+                    st.success("Social media metrics parsed successfully.")
+                else:
+                    st.error("Social media parse failed.")
+                    with st.expander("Parser debug"):
+                        st.text(dbg)
     s = st.session_state.get("social_metrics_dict", {})
     li = s.get("linkedin", {}) or {}
     fb = s.get("facebook", {}) or {}
@@ -454,23 +480,30 @@ with t3:
 
 with t4:
     st.markdown("### Registrants + Attendees")
-    txt = st.text_area("Paste registrant/attendee text", height=220, placeholder="Paste registrants/attendees export text here...")
-    with st.expander("Example paste format"):
-        st.code("Name: A | Company: X | Score: 10 | Last Submitted: 2025-11-01\nName: B | Company: Y | Score: 8 | Last Submitted: 2025-11-02")
-    if st.button("Parse Registrants + Attendees"):
-        if not api_key:
-            st.error("API key missing. Set OPENAI_API_KEY or provide key in sidebar.")
-        elif not txt.strip():
-            st.warning("Please paste registrant/attendee text.")
-        else:
-            df, dbg, ok = parse_regs(txt, api_key, model, temp)
-            if ok:
-                st.session_state["registrants_df"] = df
-                st.success("Registrant data parsed successfully.")
+    hide_regs_input = st.toggle("Hide input section", key="hide_regs_input")
+    if not hide_regs_input:
+        txt = st.text_area(
+            "Paste registrant/attendee text",
+            height=220,
+            placeholder="Paste registrants/attendees export text here...",
+            key="regs_input_text",
+        )
+        with st.expander("Example paste format"):
+            st.code("Name: A | Company: X | Score: 10 | Last Submitted: 2025-11-01\nName: B | Company: Y | Score: 8 | Last Submitted: 2025-11-02")
+        if st.button("Parse Registrants + Attendees"):
+            if not api_key:
+                st.error("API key missing. Set OPENAI_API_KEY or provide key in sidebar.")
+            elif not txt.strip():
+                st.warning("Please paste registrant/attendee text.")
             else:
-                st.error("Registrant parse failed.")
-                with st.expander("Model output/debug"):
-                    st.text(dbg)
+                df, dbg, ok = parse_regs(txt, api_key, model, temp)
+                if ok:
+                    st.session_state["registrants_df"] = df
+                    st.success("Registrant data parsed successfully.")
+                else:
+                    st.error("Registrant parse failed.")
+                    with st.expander("Model output/debug"):
+                        st.text(dbg)
     df = st.session_state["registrants_df"]
     if not df.empty:
         st.dataframe(df, use_container_width=True)
@@ -558,43 +591,50 @@ with t4:
 
 with t5:
     st.markdown("### Survey Insights")
-    up = st.file_uploader("Upload MS Forms CSV", type=["csv"])
-    txt = st.text_area("Or paste survey text", height=180, placeholder="Paste survey text here if CSV is not available...")
-    with st.expander("Example paste format"):
-        st.code("Total responses: 42\nQ9 Avg=4.3/5\nQ13 Consultation Yes=9 No=33\nQ10: ...\nQ11: ...")
-    if st.button("Parse Survey"):
-        if not api_key:
-            st.error("API key missing. Set OPENAI_API_KEY or provide key in sidebar.")
-        elif up is not None:
-            try:
+    hide_survey_input = st.toggle("Hide input section", key="hide_survey_input")
+    if not hide_survey_input:
+        up = st.file_uploader("Upload MS Forms CSV", type=["csv"], key="survey_uploader")
+        txt = st.text_area(
+            "Or paste survey text",
+            height=180,
+            placeholder="Paste survey text here if CSV is not available...",
+            key="survey_input_text",
+        )
+        with st.expander("Example paste format"):
+            st.code("Total responses: 42\nQ9 Avg=4.3/5\nQ13 Consultation Yes=9 No=33\nQ10: ...\nQ11: ...")
+        if st.button("Parse Survey"):
+            if not api_key:
+                st.error("API key missing. Set OPENAI_API_KEY or provide key in sidebar.")
+            elif up is not None:
                 try:
-                    sdf = pd.read_csv(up)
-                except Exception:
-                    up.seek(0)
-                    sdf = pd.read_csv(up, encoding="utf-8-sig")
-                d, tables, dbg, ok = parse_survey_csv(sdf, api_key, model, temp)
+                    try:
+                        sdf = pd.read_csv(up)
+                    except Exception:
+                        up.seek(0)
+                        sdf = pd.read_csv(up, encoding="utf-8-sig")
+                    d, tables, dbg, ok = parse_survey_csv(sdf, api_key, model, temp)
+                    if ok:
+                        st.session_state["survey_derived"] = d
+                        st.session_state["survey_tables"] = tables
+                        st.success("Survey CSV parsed successfully.")
+                    else:
+                        st.error("Survey parse failed.")
+                        with st.expander("Model output/debug"):
+                            st.text(dbg)
+                except Exception as e:
+                    st.error(f"CSV read failed: {e}")
+            elif txt.strip():
+                d, dbg, ok = parse_survey_text(txt, api_key, model, temp)
                 if ok:
                     st.session_state["survey_derived"] = d
-                    st.session_state["survey_tables"] = tables
-                    st.success("Survey CSV parsed successfully.")
+                    st.session_state["survey_tables"] = {}
+                    st.success("Survey text parsed successfully.")
                 else:
                     st.error("Survey parse failed.")
                     with st.expander("Model output/debug"):
                         st.text(dbg)
-            except Exception as e:
-                st.error(f"CSV read failed: {e}")
-        elif txt.strip():
-            d, dbg, ok = parse_survey_text(txt, api_key, model, temp)
-            if ok:
-                st.session_state["survey_derived"] = d
-                st.session_state["survey_tables"] = {}
-                st.success("Survey text parsed successfully.")
             else:
-                st.error("Survey parse failed.")
-                with st.expander("Model output/debug"):
-                    st.text(dbg)
-        else:
-            st.warning("Upload CSV or paste survey text.")
+                st.warning("Upload CSV or paste survey text.")
     d = st.session_state["survey_derived"]
     if d:
         n = int(to_int(d.get("n_responses")) or 0)
