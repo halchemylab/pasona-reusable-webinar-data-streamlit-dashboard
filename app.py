@@ -333,6 +333,7 @@ with t2:
             st.info("Save at least 3 webinars to unlock anomaly trend detection.")
 
 with t3:
+    st.markdown("### Social Media (Organic)")
     li_txt = st.text_area("Paste LinkedIn post analytics text", height=180, placeholder="Paste LinkedIn organic post analytics text here...")
     fb_txt = st.text_area("Paste Facebook post insights text", height=180, placeholder="Paste Facebook organic post insights text here...")
     if st.button("Parse Social Media (Organic)"):
@@ -351,15 +352,102 @@ with t3:
     li = s.get("linkedin", {}) or {}
     fb = s.get("facebook", {}) or {}
     if li or fb:
+        li_impr = int(to_int(li.get("impressions")) or 0)
+        li_eng = int(to_int(li.get("engagements")) or 0)
+        li_clicks = int(to_int(li.get("clicks")) or 0)
+        li_er = float(to_float(li.get("engagement_rate")) or 0)
+        li_ctr = float(to_float(li.get("ctr")) or 0)
+
+        fb_views = int(to_int(fb.get("views")) or 0)
+        fb_eng = int(to_int(fb.get("engagements")) or 0)
+        fb_clicks = int(to_int(fb.get("link_clicks")) or 0)
+        fb_er = (100.0 * fb_eng / fb_views) if fb_views > 0 else 0.0
+
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("LinkedIn Impressions", f"{int(to_int(li.get('impressions')) or 0):,}")
-        c2.metric("LinkedIn Engagements", f"{int(to_int(li.get('engagements')) or 0):,}")
-        c3.metric("Facebook Views", f"{int(to_int(fb.get('views')) or 0):,}")
-        c4.metric("Facebook Link Clicks", f"{int(to_int(fb.get('link_clicks')) or 0):,}")
+        c1.metric("LinkedIn Impressions", f"{li_impr:,}")
+        c2.metric("LinkedIn Engagements", f"{li_eng:,}")
+        c3.metric("Facebook Views", f"{fb_views:,}")
+        c4.metric("Facebook Link Clicks", f"{fb_clicks:,}")
         p1, p2, p3 = st.columns(3)
-        p1.metric("LinkedIn Engagement Rate", f"{(to_float(li.get('engagement_rate')) or 0):.2f}%")
-        p2.metric("LinkedIn CTR", f"{(to_float(li.get('ctr')) or 0):.2f}%")
-        p3.metric("Facebook Engagements", f"{int(to_int(fb.get('engagements')) or 0):,}")
+        p1.metric("LinkedIn Engagement Rate", f"{li_er:.2f}%")
+        p2.metric("LinkedIn CTR", f"{li_ctr:.2f}%")
+        p3.metric("Facebook Engagement Rate", f"{fb_er:.2f}%")
+
+        compare = pd.DataFrame(
+            {
+                "metric": ["Reach", "Engagements", "Clicks"],
+                "LinkedIn": [li_impr, li_eng, li_clicks],
+                "Facebook": [fb_views, fb_eng, fb_clicks],
+            }
+        ).melt(id_vars=["metric"], var_name="platform", value_name="value")
+        compare_chart = (
+            alt.Chart(compare)
+            .mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4)
+            .encode(
+                x=alt.X("metric:N", title="Metric"),
+                y=alt.Y("value:Q", title="Count"),
+                color=alt.Color("platform:N", scale=alt.Scale(domain=["LinkedIn", "Facebook"], range=["#2563eb", "#10b981"])),
+                xOffset="platform:N",
+                tooltip=["metric:N", "platform:N", "value:Q"],
+            )
+            .properties(height=320, title="Platform Performance Comparison")
+        )
+        st.altair_chart(compare_chart, use_container_width=True)
+
+        comp_df = pd.DataFrame(
+            {
+                "platform": ["LinkedIn", "LinkedIn", "LinkedIn", "LinkedIn", "Facebook", "Facebook"],
+                "component": ["Clicks", "Reactions", "Comments", "Reposts", "Link Clicks", "Other Engagements"],
+                "value": [
+                    li_clicks,
+                    int(to_int(li.get("reactions")) or 0),
+                    int(to_int(li.get("comments")) or 0),
+                    int(to_int(li.get("reposts")) or 0),
+                    fb_clicks,
+                    max(fb_eng - fb_clicks, 0),
+                ],
+            }
+        )
+        comp_df = comp_df[comp_df["value"] > 0]
+        if not comp_df.empty:
+            comp_chart = (
+                alt.Chart(comp_df)
+                .mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4)
+                .encode(
+                    x=alt.X("platform:N", title=""),
+                    y=alt.Y("value:Q", title="Count"),
+                    color=alt.Color("component:N", scale=alt.Scale(range=["#2563eb", "#f59e0b", "#ef4444", "#8b5cf6", "#10b981", "#94a3b8"])),
+                    tooltip=["platform:N", "component:N", "value:Q"],
+                )
+                .properties(height=290, title="Engagement Composition by Platform")
+            )
+            st.altair_chart(comp_chart, use_container_width=True)
+
+        st.markdown("#### Data Science View: Organic Efficiency Frontier")
+        frontier = pd.DataFrame(
+            {
+                "platform": ["LinkedIn", "Facebook"],
+                "reach": [li_impr, fb_views],
+                "engagement_rate": [li_er, fb_er],
+                "clicks": [li_clicks, fb_clicks],
+            }
+        )
+        frontier = frontier[(frontier["reach"] > 0) | (frontier["engagement_rate"] > 0) | (frontier["clicks"] > 0)]
+        if not frontier.empty:
+            front_chart = (
+                alt.Chart(frontier)
+                .mark_circle(opacity=0.85, stroke="#0f172a", strokeWidth=0.5)
+                .encode(
+                    x=alt.X("reach:Q", title="Reach (Impressions/Views)"),
+                    y=alt.Y("engagement_rate:Q", title="Engagement Rate (%)"),
+                    size=alt.Size("clicks:Q", title="Clicks", scale=alt.Scale(range=[200, 1200])),
+                    color=alt.Color("platform:N", scale=alt.Scale(domain=["LinkedIn", "Facebook"], range=["#2563eb", "#10b981"])),
+                    tooltip=["platform:N", "reach:Q", alt.Tooltip("engagement_rate:Q", format=".2f"), "clicks:Q"],
+                )
+                .properties(height=330)
+            )
+            st.altair_chart(front_chart, use_container_width=True)
+
         st.markdown("### Parsed Social Metrics")
         st.dataframe(pd.DataFrame([li, fb]), use_container_width=True)
 
