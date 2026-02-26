@@ -21,8 +21,7 @@ def _load_history() -> pd.DataFrame:
 
 def render_emails_tab(api_key: str, model: str, temp: float) -> None:
     st.markdown("### Email Performance")
-    hide_email_input = st.toggle("Hide input section", key="hide_email_input")
-    if not hide_email_input:
+    if not st.session_state.get("hide_all_inputs", False):
         txt = st.text_area(
             "Paste email report text",
             height=220,
@@ -130,8 +129,7 @@ def render_emails_tab(api_key: str, model: str, temp: float) -> None:
 
 def render_landing_tab(api_key: str, model: str, temp: float) -> None:
     st.markdown("### Landing Page Performance")
-    hide_landing_input = st.toggle("Hide input section", key="hide_landing_input")
-    if not hide_landing_input:
+    if not st.session_state.get("hide_all_inputs", False):
         txt = st.text_area(
             "Paste landing page analytics text",
             height=220,
@@ -236,8 +234,7 @@ def render_landing_tab(api_key: str, model: str, temp: float) -> None:
 
 def render_social_tab() -> None:
     st.markdown("### Social Media (Organic)")
-    hide_social_input = st.toggle("Hide input section", key="hide_social_input")
-    if not hide_social_input:
+    if not st.session_state.get("hide_all_inputs", False):
         li_txt = st.text_area("Paste LinkedIn post analytics text", height=180, placeholder="Paste LinkedIn organic post analytics text here...", key="social_linkedin_input_text")
         fb_txt = st.text_area("Paste Facebook post insights text", height=180, placeholder="Paste Facebook organic post insights text here...", key="social_facebook_input_text")
         if st.button("Parse Social Media (Organic)"):
@@ -316,8 +313,7 @@ def render_social_tab() -> None:
 
 def render_regs_tab(api_key: str, model: str, temp: float) -> None:
     st.markdown("### Registrants + Attendees")
-    hide_regs_input = st.toggle("Hide input section", key="hide_regs_input")
-    if not hide_regs_input:
+    if not st.session_state.get("hide_all_inputs", False):
         txt = st.text_area("Paste registrant/attendee text", height=220, placeholder="Paste registrants/attendees export text here...", key="regs_input_text")
         with st.expander("Example paste format"):
             st.code("Name: A | Company: X | Score: 10 | Last Submitted: 2025-11-01\nName: B | Company: Y | Score: 8 | Last Submitted: 2025-11-02")
@@ -455,8 +451,7 @@ def render_regs_tab(api_key: str, model: str, temp: float) -> None:
 
 def render_survey_tab(api_key: str, model: str, temp: float) -> None:
     st.markdown("### Survey Insights")
-    hide_survey_input = st.toggle("Hide input section", key="hide_survey_input")
-    if not hide_survey_input:
+    if not st.session_state.get("hide_all_inputs", False):
         up = st.file_uploader("Upload MS Forms CSV", type=["csv"], key="survey_uploader")
         txt = st.text_area("Or paste survey text", height=180, placeholder="Paste survey text here if CSV is not available...", key="survey_input_text")
         with st.expander("Example paste format"):
