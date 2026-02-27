@@ -705,14 +705,28 @@ def exec_summary(
         }
     if not regs_df.empty:
         reg_count = int(len(regs_df))
+        company_count = 0
         if "name" in regs_df.columns:
             reg_count = int(regs_df["name"].fillna("").astype(str).str.strip().ne("").sum())
-        company_count = int(regs_df["company"].astype(str).str.strip().replace({"": pd.NA, "nan": pd.NA}).dropna().nunique()) if "company" in regs_df.columns else 0
+            company_count = int(regs_df["company"].astype(str).str.strip().replace({"": pd.NA, "nan": pd.NA}).dropna().nunique()) if "company" in regs_df.columns else 0
         attendance = None
         if "score" in regs_df.columns:
             scores = pd.to_numeric(regs_df["score"], errors="coerce")
             if len(scores.dropna()) > 0:
                 attendance = int((scores.fillna(0) > 0).sum())
+        if "total_prospects" in regs_df.columns:
+            totals = regs_df.copy()
+            totals["total_prospects"] = pd.to_numeric(totals["total_prospects"], errors="coerce").fillna(0)
+            if "list_type" in totals.columns:
+                lt = totals["list_type"].astype(str).str.strip().str.lower()
+                reg_total = int(totals.loc[lt == "registrant", "total_prospects"].sum())
+                att_total = int(totals.loc[lt == "attendee", "total_prospects"].sum())
+                if reg_count <= 0 and reg_total > 0:
+                    reg_count = reg_total
+                if attendance is None and att_total > 0:
+                    attendance = att_total
+            elif reg_count <= 0:
+                reg_count = int(totals["total_prospects"].sum())
         payload["registrant_kpis"] = {
             "registration": reg_count,
             "attendance": attendance,

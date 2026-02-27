@@ -5,7 +5,18 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 
-from parsers import exec_summary, parse_emails, parse_landing, parse_regs, parse_social, parse_survey_csv, parse_survey_text
+from parsers import (
+    _extract_regs_rulebased,
+    _extract_regs_salesforce_list,
+    _extract_regs_salesforce_regex,
+    exec_summary,
+    parse_emails,
+    parse_landing,
+    parse_regs,
+    parse_social,
+    parse_survey_csv,
+    parse_survey_text,
+)
 from utils import clip_snippet, to_float, to_int
 
 
@@ -340,6 +351,18 @@ def render_regs_tab(api_key: str, model: str, temp: float) -> None:
                     if not ok:
                         debugs.append(f"[{label}] {dbg}")
                         continue
+                    has_people = ("name" in df_part.columns) and df_part["name"].notna().astype(str).str.strip().ne("").any()
+                    if not has_people:
+                        fallback_rows = []
+                        fallback_rows += _extract_regs_salesforce_list(raw_text)
+                        fallback_rows += _extract_regs_salesforce_regex(raw_text)
+                        if not fallback_rows:
+                            fallback_rows += _extract_regs_rulebased(raw_text)
+                        if fallback_rows:
+                            df_part = pd.DataFrame(fallback_rows)
+                            has_people = ("name" in df_part.columns) and df_part["name"].notna().astype(str).str.strip().ne("").any()
+                            if has_people:
+                                debugs.append(f"[{label}] recovered row-level people via direct extractor fallback.")
                     if df_part.empty:
                         debugs.append(f"[{label}] parsed 0 rows.")
                         continue
@@ -352,6 +375,9 @@ def render_regs_tab(api_key: str, model: str, temp: float) -> None:
                 if frames:
                     st.session_state["registrants_df"] = pd.concat(frames, ignore_index=True)
                     st.success("Registrant data parsed successfully.")
+                    if debugs:
+                        with st.expander("Parser debug"):
+                            st.text("\n\n".join(debugs))
                 else:
                     st.error("Registrant parse failed.")
                     if debugs:
@@ -373,15 +399,49 @@ def render_regs_tab(api_key: str, model: str, temp: float) -> None:
     missing_type = x["list_type"].isin(["", "none", "nan"]) & x["list_name"].notna()
     x.loc[missing_type, "list_type"] = x.loc[missing_type, "list_name"].astype(str).str.contains("attendee", case=False, na=False).map({True: "attendee", False: "registrant"})
 
-    date_col = None
-    for candidate in ["last_submitted", "registered_at", "registered_time", "joined", "created"]:
-        if candidate in x.columns:
-            date_col = candidate
-            break
-    if date_col:
-        x["registered_dt"] = pd.to_datetime(x[date_col], errors="coerce")
+    date_candidates = [c for c in ["last_submitted", "last_activity", "registered_at", "registered_time", "joined", "created"] if c in x.columns]
+    date_col = date_candidates[0] if date_candidates else None
+    if date_candidates:
+        parsed_dates = pd.DataFrame({c: pd.to_datetime(x[c], errors="coerce") for c in date_candidates})
+        # Use first available timestamp per row to keep timing view robust on noisy exports.
+        x["registered_dt"] = parsed_dates.bfill(axis=1).iloc[:, 0]
     else:
         x["registered_dt"] = pd.NaT
+    person_rows = x[x["name_clean"].ne("")].copy()
+
+    raw_people_frames = []
+    for raw_key, forced_type in [("regs_input_text_registrants", "registrant"), ("regs_input_text_attendees", "attendee")]:
+        raw_text = st.session_state.get(raw_key, "")
+        if not str(raw_text).strip():
+            continue
+        rows = []
+        rows += _extract_regs_salesforce_list(raw_text)
+        rows += _extract_regs_salesforce_regex(raw_text)
+        if not rows:
+            rows += _extract_regs_rulebased(raw_text)
+        if not rows:
+            continue
+        rdf = pd.DataFrame(rows)
+        if rdf.empty:
+            continue
+        rdf["list_type"] = forced_type
+        for col in ["name", "company", "last_submitted", "last_activity", "score"]:
+            if col not in rdf.columns:
+                rdf[col] = None
+        rdf["name_clean"] = rdf["name"].where(rdf["name"].notna(), "").astype(str).str.strip()
+        rdf = rdf[rdf["name_clean"].ne("")].copy()
+        if rdf.empty:
+            continue
+        rdf["company_clean"] = rdf["company"].astype(str).str.strip().replace({"": pd.NA, "nan": pd.NA, "none": pd.NA})
+        rdf["score_num"] = pd.to_numeric(rdf["score"], errors="coerce")
+        rdf["registered_dt"] = pd.to_datetime(rdf["last_submitted"], errors="coerce")
+        miss_dt = rdf["registered_dt"].isna()
+        if miss_dt.any():
+            rdf.loc[miss_dt, "registered_dt"] = pd.to_datetime(rdf.loc[miss_dt, "last_activity"], errors="coerce")
+        raw_people_frames.append(rdf)
+
+    if raw_people_frames:
+        person_rows = pd.concat(raw_people_frames, ignore_index=True)
 
     reg_rows = x[x["list_type"] == "registrant"] if "list_type" in x.columns else x
     att_rows = x[x["list_type"] == "attendee"] if "list_type" in x.columns else pd.DataFrame()
@@ -425,7 +485,8 @@ def render_regs_tab(api_key: str, model: str, temp: float) -> None:
     )
     st.altair_chart(fchart, use_container_width=True)
 
-    top_source = reg_rows if not reg_rows.empty else x
+    reg_people = person_rows[person_rows["list_type"] == "registrant"] if "list_type" in person_rows.columns else person_rows
+    top_source = reg_people if not reg_people.empty else person_rows
     reg_time_col = date_col if date_col else "last_submitted"
     top_people = (
         top_source[["name", "company_clean", reg_time_col, "score_num"]]
@@ -433,7 +494,7 @@ def render_regs_tab(api_key: str, model: str, temp: float) -> None:
         .dropna(subset=["name"])
         .sort_values(["score"], ascending=False, na_position="last")
         .drop_duplicates(subset=["name", "company"], keep="first")
-        .head(20)
+        .head(10)
     )
     st.markdown("#### Top Scoring People")
     if top_people.empty:
@@ -441,23 +502,26 @@ def render_regs_tab(api_key: str, model: str, temp: float) -> None:
     else:
         st.dataframe(top_people, use_container_width=True)
 
-    timed = reg_rows if not reg_rows.empty else x
+    timed = reg_people if not reg_people.empty else person_rows
     timed = timed.dropna(subset=["registered_dt"]).copy()
     st.markdown("#### Registration Timing")
     if timed.empty:
-        st.info("No registration timestamps found (expected `last_submitted` or similar date field).")
+        if person_rows.empty:
+            st.info("Only list-level summary metrics were parsed from this paste. Top scoring people and registration timing need row-level Name/Score/Joined rows.")
+        else:
+            st.info("No registration timestamps found (expected `last_submitted` or similar date field).")
     else:
-        by_day = timed.groupby(timed["registered_dt"].dt.date).size().reset_index(name="registrations")
-        by_day.columns = ["date", "registrations"]
+        by_day = timed.groupby(timed["registered_dt"].dt.to_period("W-MON").dt.start_time).size().reset_index(name="registrations")
+        by_day.columns = ["week_start", "registrations"]
         reg_chart = (
             alt.Chart(by_day)
             .mark_bar(cornerRadiusTopLeft=3, cornerRadiusTopRight=3, color="#10b981")
             .encode(
-                x=alt.X("date:T", title="Registration Date"),
+                x=alt.X("week_start:T", title="Week Start"),
                 y=alt.Y("registrations:Q", title="People Registered"),
-                tooltip=[alt.Tooltip("date:T"), "registrations:Q"],
+                tooltip=[alt.Tooltip("week_start:T"), "registrations:Q"],
             )
-            .properties(height=300, title="How Many People Registered by Day")
+            .properties(height=300, title="How Many People Registered by Week")
         )
         st.altair_chart(reg_chart, use_container_width=True)
 
@@ -644,7 +708,20 @@ def render_exec_summary_tab(api_key: str, model: str, temp: float) -> None:
                     if len(scores.dropna()) > 0:
                         attendance = int((scores.fillna(0) > 0).sum())
             elif "total_prospects" in regs_df.columns:
-                registrations = int(pd.to_numeric(regs_df["total_prospects"], errors="coerce").fillna(0).sum())
+                totals = regs_df.copy()
+                totals["total_prospects"] = pd.to_numeric(totals["total_prospects"], errors="coerce").fillna(0)
+                if "list_type" in totals.columns:
+                    lt = totals["list_type"].astype(str).str.strip().str.lower()
+                    reg_total = int(totals.loc[lt == "registrant", "total_prospects"].sum())
+                    att_total = int(totals.loc[lt == "attendee", "total_prospects"].sum())
+                    if reg_total > 0:
+                        registrations = reg_total
+                    else:
+                        registrations = int(totals["total_prospects"].sum())
+                    if att_total > 0:
+                        attendance = att_total
+                else:
+                    registrations = int(totals["total_prospects"].sum())
 
         st.markdown("#### Full Funnel")
         st.caption("Email Sent -> Open -> Click -> Landing Visit -> Registration -> Attendance -> Consultation Lead")
