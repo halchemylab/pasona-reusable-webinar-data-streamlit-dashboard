@@ -421,6 +421,38 @@ def _extract_regs_salesforce_regex(text: str):
     return out
 
 
+def _list_type_from_name(list_name: str) -> str:
+    return "attendee" if re.search(r"attendee", str(list_name or ""), flags=re.I) else "registrant"
+
+
+def _extract_list_blocks(text: str):
+    lines = (text or "").splitlines()
+    starts = []
+    for i, raw in enumerate(lines):
+        ln = _norm_ws(raw)
+        if re.search(r"^webinar_", ln, flags=re.I):
+            starts.append((i, ln))
+    if not starts:
+        return []
+    blocks = []
+    for idx, (start, name) in enumerate(starts):
+        end = starts[idx + 1][0] if idx + 1 < len(starts) else len(lines)
+        block_text = "\n".join(lines[start:end]).strip()
+        if block_text:
+            blocks.append((name, block_text))
+    return blocks
+
+
+def _extract_regs_salesforce_regex_with_context(text: str, list_name: Optional[str] = None, list_type: Optional[str] = None):
+    out = _extract_regs_salesforce_regex(text)
+    for r in out:
+        if list_name:
+            r["list_name"] = list_name
+        if list_type:
+            r["list_type"] = list_type
+    return out
+
+
 def _extract_regs_list_summaries(text: str):
     lines = [_norm_ws(ln) for ln in (text or "").splitlines()]
     lines = [ln for ln in lines if ln]
@@ -468,6 +500,7 @@ def _extract_regs_list_summaries(text: str):
         out.append(
             {
                 "list_name": ln,
+                "list_type": _list_type_from_name(ln),
                 "total_prospects": total,
                 "mailable_prospects": mailable,
                 "mailable_rate": rate,
@@ -481,24 +514,43 @@ def _extract_regs_list_summaries(text: str):
 
 
 def parse_regs(text: str, api_key: str, model: str, temp: float):
-    rows = _extract_regs_rulebased(text)
-    rows += _extract_regs_salesforce_regex(text)
+    rows = []
+    blocks = _extract_list_blocks(text)
+    if blocks:
+        for list_name, block_text in blocks:
+            rows += _extract_regs_salesforce_regex_with_context(block_text, list_name=list_name, list_type=_list_type_from_name(list_name))
+        if not rows:
+            rows += _extract_regs_rulebased(text)
+    else:
+        rows += _extract_regs_salesforce_regex(text)
+        rows += _extract_regs_rulebased(text)
     if rows:
         df = pd.DataFrame(rows)
-        for col in ["name", "company", "score", "last_submitted", "last_activity"]:
+        for col in ["name", "company", "score", "last_submitted", "last_activity", "list_name", "list_type"]:
             if col not in df.columns:
                 df[col] = None
         for c in ["name", "company", "last_submitted", "last_activity"]:
             df[c] = df[c].apply(lambda v: _norm_ws(v) if isinstance(v, str) else v)
+        df["list_type"] = df["list_type"].apply(lambda v: _norm_ws(v).lower() if isinstance(v, str) else v)
+        if "list_name" in df.columns:
+            df.loc[df["list_type"].isna() & df["list_name"].notna(), "list_type"] = df.loc[df["list_type"].isna() & df["list_name"].notna(), "list_name"].apply(_list_type_from_name)
         df["score"] = pd.to_numeric(df["score"], errors="coerce")
         df = df.dropna(subset=["name"])
         df = df[~df["name"].str.lower().str.contains(r"tagstools|actions|all prospects|filter|view:", na=False)]
-        df = df.drop_duplicates(subset=["name", "company", "last_submitted"], keep="first")
-        return df[["name", "company", "score", "last_submitted", "last_activity"]], "", True
+        df = df.drop_duplicates(subset=["name", "company", "last_submitted", "list_name"], keep="first")
+        cols = ["name", "company", "score", "last_submitted", "last_activity"]
+        if df["list_name"].notna().any():
+            cols.append("list_name")
+        if df["list_type"].notna().any():
+            cols.append("list_type")
+        return df[cols], "", True
     list_rows = _extract_regs_list_summaries(text)
     if list_rows:
         df = pd.DataFrame(list_rows)
-        return df[["list_name", "total_prospects", "mailable_prospects", "mailable_rate"]], "", True
+        cols = ["list_name", "total_prospects", "mailable_prospects", "mailable_rate"]
+        if "list_type" in df.columns:
+            cols.insert(1, "list_type")
+        return df[cols], "", True
     return pd.DataFrame(), "Could not detect registrant rows from this raw export. Try including the table section with Name/Company/Score/Joined/Created.", False
 
 
