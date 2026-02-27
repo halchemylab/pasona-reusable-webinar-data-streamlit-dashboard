@@ -4,7 +4,13 @@ import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 
-from snapshot_store import append_snapshot_row, build_snapshot_row, has_snapshot_data
+from snapshot_store import (
+    append_snapshot_row,
+    build_snapshot_row,
+    has_snapshot_data,
+    load_snapshot_history,
+    load_snapshot_into_state,
+)
 from ui.tabs import render_emails_tab, render_exec_summary_tab, render_landing_tab, render_regs_tab, render_social_tab, render_survey_tab
 from ui.theme import apply_dashboard_style
 from usage_store import init_state, load_usage, webinar_saved_success
@@ -78,6 +84,35 @@ with st.sidebar:
             path = append_snapshot_row(row)
             webinar_saved_success()
             st.success(f"Saved snapshot to {path}")
+
+    st.divider()
+    st.subheader("Load Webinar Snapshot")
+    history = load_snapshot_history()
+    if history.empty:
+        st.caption("No saved snapshots yet.")
+    elif "webinar_id" not in history.columns:
+        st.caption("Snapshot history format is missing webinar IDs.")
+    else:
+        pick = history[["webinar_id", "webinar_name", "saved_at_utc"]].copy()
+        pick["webinar_name"] = pick["webinar_name"].fillna("").astype(str).str.strip()
+        pick["saved_at_utc"] = pd.to_datetime(pick["saved_at_utc"], errors="coerce")
+        pick["label"] = pick.apply(
+            lambda r: (
+                f"{r['saved_at_utc'].strftime('%Y-%m-%d %H:%M UTC') if pd.notna(r['saved_at_utc']) else 'Unknown date'}"
+                f" | {r['webinar_name'] if r['webinar_name'] else '(Untitled webinar)'}"
+            ),
+            axis=1,
+        )
+        options = dict(zip(pick["label"], pick["webinar_id"]))
+        selected_label = st.selectbox("Choose saved webinar", list(options.keys()), key="snapshot_to_load")
+        if st.button("Load Selected Webinar", use_container_width=True):
+            state = load_snapshot_into_state(options[selected_label])
+            if not state:
+                st.error("Could not load that snapshot.")
+            else:
+                for k, v in state.items():
+                    st.session_state[k] = v
+                st.success("Snapshot loaded into dashboard.")
 
 tabs = st.tabs(["Emails", "Landing Page", "Social Media (Organic)", "Registrants + Attendees", "Survey (MS Forms)", "Executive Summary"])
 t1, t2, t3, t4, t5, t6 = tabs

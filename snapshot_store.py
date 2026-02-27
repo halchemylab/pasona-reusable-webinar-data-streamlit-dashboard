@@ -122,3 +122,57 @@ def append_snapshot_row(row: Dict[str, Any]) -> Path:
     else:
         frame.to_csv(HISTORY_FILE, mode="a", index=False, header=True, encoding="utf-8-sig")
     return HISTORY_FILE
+
+
+def load_snapshot_history() -> pd.DataFrame:
+    if not HISTORY_FILE.exists():
+        return pd.DataFrame()
+    try:
+        hist = pd.read_csv(HISTORY_FILE, encoding="utf-8-sig")
+    except Exception:
+        return pd.DataFrame()
+    if hist.empty:
+        return hist
+    if "saved_at_utc" in hist.columns:
+        hist = hist.sort_values("saved_at_utc", ascending=False, na_position="last")
+    return hist
+
+
+def _json_load(value: Any, default: Any) -> Any:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return default
+    if isinstance(value, (dict, list)):
+        return value
+    s = str(value).strip()
+    if not s:
+        return default
+    try:
+        return json.loads(s)
+    except Exception:
+        return default
+
+
+def load_snapshot_into_state(webinar_id: str) -> Dict[str, Any]:
+    hist = load_snapshot_history()
+    if hist.empty or "webinar_id" not in hist.columns:
+        return {}
+    match = hist[hist["webinar_id"].astype(str) == str(webinar_id)]
+    if match.empty:
+        return {}
+    row = match.iloc[0]
+    emails_records = _json_load(row.get("emails_json"), [])
+    regs_records = _json_load(row.get("registrants_json"), [])
+    landing = _json_load(row.get("landing_json"), {})
+    social = _json_load(row.get("social_json"), {})
+    survey = _json_load(row.get("survey_json"), {})
+    summary = row.get("exec_summary_text")
+
+    return {
+        "parsed_emails_df": pd.DataFrame(emails_records) if isinstance(emails_records, list) else pd.DataFrame(),
+        "landing_metrics_dict": landing if isinstance(landing, dict) else {},
+        "social_metrics_dict": social if isinstance(social, dict) else {},
+        "registrants_df": pd.DataFrame(regs_records) if isinstance(regs_records, list) else pd.DataFrame(),
+        "survey_derived": survey if isinstance(survey, dict) else {},
+        "survey_tables": {},
+        "exec_summary_text": str(summary).strip() if summary is not None and not (isinstance(summary, float) and pd.isna(summary)) else "",
+    }
