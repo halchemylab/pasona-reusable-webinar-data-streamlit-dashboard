@@ -307,10 +307,6 @@ def render_social_tab() -> None:
             ).properties(height=330)
             st.altair_chart(front_chart, use_container_width=True)
 
-        st.markdown("### Parsed Social Metrics")
-        st.dataframe(pd.DataFrame([li, fb]), use_container_width=True)
-
-
 def render_regs_tab(api_key: str, model: str, temp: float) -> None:
     st.markdown("### Registrants + Attendees")
     if not st.session_state.get("hide_all_inputs", False):
