@@ -46,11 +46,10 @@ with ctrl_b:
 with st.sidebar:
     t = int(st.session_state["webinars_saved"])
     with st.container(border=True):
-        st.metric("Webinars Saved", f"{t}")
-    with st.container(border=True):
-        st.metric("Time Saved", f"{t}h")
-    with st.container(border=True):
-        st.metric("Money Saved", f"${t * 45:,.0f}")
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Webinars Saved", f"{t}")
+        m2.metric("Time Saved", f"{t}h")
+        m3.metric("Money Saved", f"${t * 45:,.0f}")
     st.divider()
     st.subheader("LLM Settings")
     key_override = st.text_input("OpenAI API Key (override)", type="password", placeholder="sk-...")
