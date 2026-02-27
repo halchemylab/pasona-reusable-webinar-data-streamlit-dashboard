@@ -745,5 +745,3 @@ def render_exec_summary_tab(api_key: str, model: str, temp: float) -> None:
         with st.container(border=True):
             st.markdown("#### Narrative")
             st.markdown(summary_text)
-
-    st.text_area("Executive Summary (copy-ready)", value=summary_text, height=220)
