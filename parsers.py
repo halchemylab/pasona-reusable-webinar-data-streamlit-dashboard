@@ -518,11 +518,20 @@ def parse_regs(text: str, api_key: str, model: str, temp: float):
     blocks = _extract_list_blocks(text)
     if blocks:
         for list_name, block_text in blocks:
-            rows += _extract_regs_salesforce_regex_with_context(block_text, list_name=list_name, list_type=_list_type_from_name(list_name))
+            block_type = _list_type_from_name(list_name)
+            block_rows = []
+            block_rows += _extract_regs_salesforce_regex_with_context(block_text, list_name=list_name, list_type=block_type)
+            list_rows = _extract_regs_salesforce_list(block_text)
+            for r in list_rows:
+                r["list_name"] = list_name
+                r["list_type"] = block_type
+            block_rows += list_rows
+            rows += block_rows
         if not rows:
             rows += _extract_regs_rulebased(text)
     else:
         rows += _extract_regs_salesforce_regex(text)
+        rows += _extract_regs_salesforce_list(text)
         rows += _extract_regs_rulebased(text)
     if rows:
         df = pd.DataFrame(rows)

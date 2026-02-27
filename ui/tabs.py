@@ -310,232 +310,156 @@ def render_social_tab() -> None:
 def render_regs_tab(api_key: str, model: str, temp: float) -> None:
     st.markdown("### Registrants + Attendees")
     if not st.session_state.get("hide_all_inputs", False):
-        txt = st.text_area("Paste registrant/attendee text", height=220, placeholder="Paste registrants/attendees export text here...", key="regs_input_text")
+        reg_txt = st.text_area(
+            "Paste registrants list text",
+            height=220,
+            placeholder="Paste Salesforce/Pardot registrants list export here...",
+            key="regs_input_text_registrants",
+        )
+        att_txt = st.text_area(
+            "Paste attendees list text",
+            height=220,
+            placeholder="Paste Salesforce/Pardot attendees list export here...",
+            key="regs_input_text_attendees",
+        )
         with st.expander("Example paste format"):
             st.code("Name: A | Company: X | Score: 10 | Last Submitted: 2025-11-01\nName: B | Company: Y | Score: 8 | Last Submitted: 2025-11-02")
         if st.button("Parse Registrants + Attendees"):
-            if not api_key:
-                st.error("API key missing. Set OPENAI_API_KEY or provide key in sidebar.")
-            elif not txt.strip():
-                st.warning("Please paste registrant/attendee text.")
+            if not (reg_txt.strip() or att_txt.strip()):
+                st.warning("Please paste registrants and/or attendees text.")
             else:
-                df, dbg, ok = parse_regs(txt, api_key, model, temp)
-                if ok:
-                    st.session_state["registrants_df"] = df
+                frames = []
+                debugs = []
+                for label, raw_text, forced_type in [
+                    ("registrants", reg_txt, "registrant"),
+                    ("attendees", att_txt, "attendee"),
+                ]:
+                    if not raw_text.strip():
+                        continue
+                    df_part, dbg, ok = parse_regs(raw_text, api_key, model, temp)
+                    if not ok:
+                        debugs.append(f"[{label}] {dbg}")
+                        continue
+                    if df_part.empty:
+                        debugs.append(f"[{label}] parsed 0 rows.")
+                        continue
+                    part = df_part.copy()
+                    part["list_type"] = forced_type
+                    if "list_name" not in part.columns:
+                        part["list_name"] = f"{label}_manual"
+                    frames.append(part)
+
+                if frames:
+                    st.session_state["registrants_df"] = pd.concat(frames, ignore_index=True)
                     st.success("Registrant data parsed successfully.")
                 else:
                     st.error("Registrant parse failed.")
-                    with st.expander("Model output/debug"):
-                        st.text(dbg)
+                    if debugs:
+                        with st.expander("Parser debug"):
+                            st.text("\n\n".join(debugs))
     df = st.session_state["registrants_df"]
-    if not df.empty:
-        st.dataframe(df, use_container_width=True)
-        if {"list_name", "total_prospects", "mailable_prospects", "mailable_rate"}.issubset(df.columns):
-            x = df.copy()
-            if "list_type" not in x.columns:
-                x["list_type"] = x["list_name"].astype(str).str.contains("attendee", case=False, na=False).map({True: "attendee", False: "registrant"})
-            x["total_prospects"] = pd.to_numeric(x["total_prospects"], errors="coerce")
-            x["mailable_prospects"] = pd.to_numeric(x["mailable_prospects"], errors="coerce")
-            x["mailable_rate"] = pd.to_numeric(x["mailable_rate"], errors="coerce")
-            has_attendee_split = x["list_type"].astype(str).str.contains("attendee", case=False, na=False).any() and x["list_type"].astype(str).str.contains("registrant", case=False, na=False).any()
-            if has_attendee_split:
-                reg_total = int(x.loc[x["list_type"] == "registrant", "total_prospects"].fillna(0).sum())
-                att_total = int(x.loc[x["list_type"] == "attendee", "total_prospects"].fillna(0).sum())
-                attendance_rate = (100.0 * att_total / reg_total) if reg_total > 0 else 0.0
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("Registrant Count", f"{reg_total:,}")
-                c2.metric("Attendee Count", f"{att_total:,}")
-                c3.metric("Attendance Rate", f"{attendance_rate:.1f}%")
-                c4.metric("Lists Parsed", f"{int(len(x)):,}")
-                funnel = pd.DataFrame(
-                    {
-                        "stage": ["Registrants", "Attendees"],
-                        "value": [reg_total, att_total],
-                    }
-                )
-                fchart = (
-                    alt.Chart(funnel)
-                    .mark_bar(size=42, cornerRadiusEnd=6, color="#2563eb")
-                    .encode(
-                        y=alt.Y("stage:N", sort=["Registrants", "Attendees"], title=""),
-                        x=alt.X("value:Q", title="Count"),
-                        tooltip=["stage:N", "value:Q"],
-                    )
-                    .properties(height=180, title="Registrant to Attendee Funnel")
-                )
-                st.altair_chart(fchart, use_container_width=True)
-                st.info("Top scoring prospects require row-level Name/Company/Score records in the pasted text.")
-                return
+    if df.empty:
+        return
 
-            n_lists = int(len(x))
-            total = int(x["total_prospects"].fillna(0).sum())
-            mailable = int(x["mailable_prospects"].fillna(0).sum())
-            weighted_rate = (100.0 * mailable / total) if total > 0 else float(x["mailable_rate"].mean() or 0)
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Lists Parsed", f"{n_lists:,}")
-            c2.metric("Total Prospects", f"{total:,}")
-            c3.metric("Mailable Prospects", f"{mailable:,}")
-            c4.metric("Mailable Rate", f"{weighted_rate:.1f}%")
+    x = df.copy()
+    for col in ["name", "company", "last_submitted", "list_type", "list_name"]:
+        if col not in x.columns:
+            x[col] = None
+    x["name_clean"] = x["name"].where(x["name"].notna(), "").astype(str).str.strip()
+    x.loc[x["name_clean"].str.lower().isin(["none", "nan"]), "name_clean"] = ""
+    x["company_clean"] = x["company"].astype(str).str.strip().replace({"": pd.NA, "nan": pd.NA, "none": pd.NA})
+    x["score_num"] = pd.to_numeric(x.get("score"), errors="coerce")
+    x["list_type"] = x["list_type"].astype(str).str.strip().str.lower()
+    missing_type = x["list_type"].isin(["", "none", "nan"]) & x["list_name"].notna()
+    x.loc[missing_type, "list_type"] = x.loc[missing_type, "list_name"].astype(str).str.contains("attendee", case=False, na=False).map({True: "attendee", False: "registrant"})
 
-            bars = (
-                x[["list_name", "total_prospects", "mailable_prospects"]]
-                .melt(id_vars=["list_name"], var_name="metric", value_name="value")
-                .dropna(subset=["value"])
+    date_col = None
+    for candidate in ["last_submitted", "registered_at", "registered_time", "joined", "created"]:
+        if candidate in x.columns:
+            date_col = candidate
+            break
+    if date_col:
+        x["registered_dt"] = pd.to_datetime(x[date_col], errors="coerce")
+    else:
+        x["registered_dt"] = pd.NaT
+
+    reg_rows = x[x["list_type"] == "registrant"] if "list_type" in x.columns else x
+    att_rows = x[x["list_type"] == "attendee"] if "list_type" in x.columns else pd.DataFrame()
+    reg_names = set(reg_rows.loc[reg_rows["name_clean"].ne(""), "name_clean"].tolist())
+    att_names = set(att_rows.loc[att_rows["name_clean"].ne(""), "name_clean"].tolist())
+
+    if reg_names:
+        reg_count = len(reg_names)
+    else:
+        reg_count = int(x["name_clean"].ne("").sum())
+    if att_names:
+        att_count = len(att_names)
+    else:
+        att_count = int((x["score_num"].fillna(0) > 0).sum())
+    if {"total_prospects", "list_type"}.issubset(x.columns):
+        totals = x.copy()
+        totals["total_prospects"] = pd.to_numeric(totals["total_prospects"], errors="coerce").fillna(0)
+        reg_total = int(totals.loc[totals["list_type"] == "registrant", "total_prospects"].sum())
+        att_total = int(totals.loc[totals["list_type"] == "attendee", "total_prospects"].sum())
+        if reg_count == 0 and reg_total > 0:
+            reg_count = reg_total
+        if att_count == 0 and att_total > 0:
+            att_count = att_total
+    attendance_rate = (100.0 * att_count / reg_count) if reg_count > 0 else 0.0
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Registrants", f"{reg_count:,}")
+    c2.metric("Attendees", f"{att_count:,}")
+    c3.metric("Registrant -> Attendee", f"{attendance_rate:.1f}%")
+
+    funnel = pd.DataFrame({"stage": ["Registrants", "Attendees"], "value": [reg_count, att_count]})
+    fchart = (
+        alt.Chart(funnel)
+        .mark_bar(size=42, cornerRadiusEnd=6, color="#2563eb")
+        .encode(
+            y=alt.Y("stage:N", sort=["Registrants", "Attendees"], title=""),
+            x=alt.X("value:Q", title="People"),
+            tooltip=["stage:N", "value:Q"],
+        )
+        .properties(height=180, title="Registrant to Attendee Funnel")
+    )
+    st.altair_chart(fchart, use_container_width=True)
+
+    top_source = reg_rows if not reg_rows.empty else x
+    reg_time_col = date_col if date_col else "last_submitted"
+    top_people = (
+        top_source[["name", "company_clean", reg_time_col, "score_num"]]
+        .rename(columns={"company_clean": "company", reg_time_col: "registered_time", "score_num": "score"})
+        .dropna(subset=["name"])
+        .sort_values(["score"], ascending=False, na_position="last")
+        .drop_duplicates(subset=["name", "company"], keep="first")
+        .head(20)
+    )
+    st.markdown("#### Top Scoring People")
+    if top_people.empty:
+        st.info("No row-level people records were parsed.")
+    else:
+        st.dataframe(top_people, use_container_width=True)
+
+    timed = reg_rows if not reg_rows.empty else x
+    timed = timed.dropna(subset=["registered_dt"]).copy()
+    st.markdown("#### Registration Timing")
+    if timed.empty:
+        st.info("No registration timestamps found (expected `last_submitted` or similar date field).")
+    else:
+        by_day = timed.groupby(timed["registered_dt"].dt.date).size().reset_index(name="registrations")
+        by_day.columns = ["date", "registrations"]
+        reg_chart = (
+            alt.Chart(by_day)
+            .mark_bar(cornerRadiusTopLeft=3, cornerRadiusTopRight=3, color="#10b981")
+            .encode(
+                x=alt.X("date:T", title="Registration Date"),
+                y=alt.Y("registrations:Q", title="People Registered"),
+                tooltip=[alt.Tooltip("date:T"), "registrations:Q"],
             )
-            if not bars.empty:
-                chart = (
-                    alt.Chart(bars)
-                    .mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4)
-                    .encode(
-                        x=alt.X("list_name:N", title="List"),
-                        y=alt.Y("value:Q", title="Prospects"),
-                        color=alt.Color("metric:N", scale=alt.Scale(domain=["total_prospects", "mailable_prospects"], range=["#2563eb", "#10b981"])),
-                        xOffset="metric:N",
-                        tooltip=["list_name:N", "metric:N", "value:Q"],
-                    )
-                    .properties(height=300, title="Prospect Volume by List")
-                )
-                st.altair_chart(chart, use_container_width=True)
-
-            st.markdown("#### Data Science View: Mailable Efficiency Frontier")
-            frontier = x.dropna(subset=["total_prospects"]).copy()
-            if not frontier.empty:
-                if frontier["mailable_rate"].isna().all():
-                    frontier["mailable_rate"] = (100 * frontier["mailable_prospects"] / frontier["total_prospects"]).fillna(0)
-                front = (
-                    alt.Chart(frontier)
-                    .mark_circle(size=220, color="#2563eb", opacity=0.85)
-                    .encode(
-                        x=alt.X("total_prospects:Q", title="Total Prospects"),
-                        y=alt.Y("mailable_rate:Q", title="Mailable Rate (%)"),
-                        tooltip=["list_name:N", "total_prospects:Q", "mailable_prospects:Q", alt.Tooltip("mailable_rate:Q", format=".1f")],
-                    )
-                    .properties(height=320)
-                )
-                st.altair_chart(front, use_container_width=True)
-            return
-
-        x = df.copy()
-        if "list_type" not in x.columns and "list_name" in x.columns:
-            x["list_type"] = x["list_name"].astype(str).str.contains("attendee", case=False, na=False).map({True: "attendee", False: "registrant"})
-        if "list_type" in x.columns:
-            x["list_type"] = x["list_type"].astype(str).str.strip().str.lower()
-        if {"name", "score", "list_type"}.issubset(x.columns):
-            has_attendee_split = (x["list_type"] == "attendee").any() and (x["list_type"] == "registrant").any()
-            if has_attendee_split:
-                x["name_clean"] = x["name"].astype(str).str.strip()
-                reg_names = set(x.loc[(x["list_type"] == "registrant") & x["name_clean"].ne(""), "name_clean"].tolist())
-                att_names = set(x.loc[(x["list_type"] == "attendee") & x["name_clean"].ne(""), "name_clean"].tolist())
-                reg_count = len(reg_names)
-                att_count = len(att_names)
-                attended_from_reg = len(reg_names.intersection(att_names))
-                attendance_rate = (100.0 * att_count / reg_count) if reg_count > 0 else 0.0
-
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("Registrant Count", f"{reg_count:,}")
-                c2.metric("Attendee Count", f"{att_count:,}")
-                c3.metric("Attendance Rate", f"{attendance_rate:.1f}%")
-                c4.metric("Attended from Registrants", f"{attended_from_reg:,}")
-
-                funnel = pd.DataFrame({"stage": ["Registrants", "Attendees"], "value": [reg_count, att_count]})
-                fchart = (
-                    alt.Chart(funnel)
-                    .mark_bar(size=42, cornerRadiusEnd=6, color="#2563eb")
-                    .encode(
-                        y=alt.Y("stage:N", sort=["Registrants", "Attendees"], title=""),
-                        x=alt.X("value:Q", title="Count"),
-                        tooltip=["stage:N", "value:Q"],
-                    )
-                    .properties(height=180, title="Registrant to Attendee Funnel")
-                )
-                st.altair_chart(fchart, use_container_width=True)
-
-                x["score_num"] = pd.to_numeric(x.get("score"), errors="coerce")
-                top = (
-                    x[x["list_type"] == "registrant"][["name", "company", "score_num"]]
-                    .dropna(subset=["score_num"])
-                    .sort_values("score_num", ascending=False)
-                    .drop_duplicates(subset=["name", "company"], keep="first")
-                    .head(15)
-                )
-                st.markdown("#### Top Scoring Prospects (Registrants)")
-                if top.empty:
-                    st.info("No numeric scores detected in registrant rows.")
-                else:
-                    top = top.rename(columns={"score_num": "score"})
-                    st.dataframe(top, use_container_width=True)
-                    top_chart = (
-                        alt.Chart(top.head(10))
-                        .mark_bar(cornerRadiusEnd=5, color="#10b981")
-                        .encode(
-                            y=alt.Y("name:N", sort="-x", title=""),
-                            x=alt.X("score:Q", title="Score"),
-                            tooltip=["name:N", "company:N", "score:Q"],
-                        )
-                        .properties(height=320, title="Top 10 Prospect Scores")
-                    )
-                    st.altair_chart(top_chart, use_container_width=True)
-                return
-
-        if "last_submitted" in x.columns:
-            x["submitted_dt"] = pd.to_datetime(x["last_submitted"], errors="coerce")
-        else:
-            x["submitted_dt"] = pd.NaT
-        x["score_num"] = pd.to_numeric(x.get("score"), errors="coerce")
-        if "company" in x.columns:
-            x["company_clean"] = x["company"].astype(str).str.strip().replace({"": pd.NA, "nan": pd.NA})
-        else:
-            x["company_clean"] = pd.NA
-
-        total_regs = len(x)
-        unique_companies = int(x["company_clean"].dropna().nunique())
-        median_score = float(x["score_num"].median()) if len(x["score_num"].dropna()) > 0 else None
-        dated = x.dropna(subset=["submitted_dt"])
-        day_span = max((dated["submitted_dt"].max() - dated["submitted_dt"].min()).days + 1, 1) if not dated.empty else 1
-        avg_daily = (len(dated) / day_span) if not dated.empty else 0
-
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Total Registrants", f"{total_regs:,}")
-        c2.metric("Unique Companies", f"{unique_companies:,}")
-        c3.metric("Median Score", f"{median_score:.1f}" if median_score is not None else "N/A")
-        c4.metric("Avg Registrations/Day", f"{avg_daily:.2f}")
-
-        left, right = st.columns([1.3, 1])
-        with left:
-            if not dated.empty:
-                by_day = dated.groupby(dated["submitted_dt"].dt.date).size().reset_index(name="count")
-                by_day.columns = ["date", "count"]
-                line = alt.Chart(by_day).mark_area(line={"color": "#2563eb"}, color="#93c5fd", opacity=0.45).encode(
-                    x=alt.X("date:T", title="Date"), y=alt.Y("count:Q", title="Registrations"), tooltip=[alt.Tooltip("date:T"), "count:Q"],
-                ).properties(height=300, title="Registrations Over Time")
-                st.altair_chart(line, use_container_width=True)
-            else:
-                st.info("Include `last_submitted` values to render trend chart.")
-        with right:
-            top = x["company_clean"].dropna().value_counts().head(10).reset_index()
-            if not top.empty:
-                top.columns = ["company", "count"]
-                bars = alt.Chart(top).mark_bar(cornerRadiusEnd=5, color="#10b981").encode(
-                    y=alt.Y("company:N", sort="-x", title=""), x=alt.X("count:Q", title="Registrants"), tooltip=["company:N", "count:Q"],
-                ).properties(height=300, title="Top Companies")
-                st.altair_chart(bars, use_container_width=True)
-            else:
-                st.info("No company field found for top-company chart.")
-
-        st.markdown("#### Data Science View: Weekly Cohort Heatmap")
-        if not dated.empty:
-            heat = dated.copy()
-            heat["week"] = heat["submitted_dt"].dt.to_period("W").astype(str)
-            heat["weekday"] = heat["submitted_dt"].dt.day_name()
-            order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-            heat_map = heat.groupby(["week", "weekday"]).size().reset_index(name="count")
-            heat_chart = alt.Chart(heat_map).mark_rect().encode(
-                x=alt.X("week:N", title="Week Cohort"), y=alt.Y("weekday:N", sort=order, title=""),
-                color=alt.Color("count:Q", scale=alt.Scale(scheme="blues"), title="Registrants"), tooltip=["week:N", "weekday:N", "count:Q"],
-            ).properties(height=260)
-            st.altair_chart(heat_chart, use_container_width=True)
-        else:
-            st.info("Need date data to build cohort heatmap.")
+            .properties(height=300, title="How Many People Registered by Day")
+        )
+        st.altair_chart(reg_chart, use_container_width=True)
 
 def render_survey_tab(api_key: str, model: str, temp: float) -> None:
     st.markdown("### Survey Insights")
