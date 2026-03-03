@@ -22,6 +22,49 @@ def get_key(override: str) -> str:
     return (override or "").strip() or os.getenv("OPENAI_API_KEY", "").strip()
 
 
+def _is_nonempty_text(v) -> bool:
+    if v is None:
+        return False
+    s = str(v).strip()
+    return s not in {"", "nan", "None", "null", "{}"}
+
+
+def _automation_roi_from_history(history: pd.DataFrame) -> tuple[int, float, float]:
+    if history.empty:
+        return 0, 0.0, 0.0
+
+    h = history.copy()
+    for c in ["email_count", "landing_views", "landing_active_users", "registrant_count", "survey_n_responses"]:
+        if c in h.columns:
+            h[c] = pd.to_numeric(h[c], errors="coerce").fillna(0)
+
+    sections = pd.DataFrame(index=h.index)
+    sections["emails"] = (h["email_count"] > 0) if "email_count" in h.columns else False
+    if {"landing_views", "landing_active_users"}.issubset(h.columns):
+        sections["landing"] = (h["landing_views"] > 0) | (h["landing_active_users"] > 0)
+    else:
+        sections["landing"] = False
+    sections["social"] = (
+        h.get("social_json", pd.Series(index=h.index, dtype=object)).apply(_is_nonempty_text)
+        if "social_json" in h.columns
+        else False
+    )
+    sections["registrants"] = (h["registrant_count"] > 0) if "registrant_count" in h.columns else False
+    sections["survey"] = (h["survey_n_responses"] > 0) if "survey_n_responses" in h.columns else False
+    sections["summary"] = (
+        h.get("exec_summary_text", pd.Series(index=h.index, dtype=object)).apply(_is_nonempty_text)
+        if "exec_summary_text" in h.columns
+        else False
+    )
+
+    # 30 minutes saved per completed section in a webinar snapshot.
+    total_sections = float(sections.sum(axis=1).sum())
+    hours_saved = total_sections * 0.5
+    webinars = int(h["webinar_id"].astype(str).nunique()) if "webinar_id" in h.columns else int(len(h))
+    money_saved = hours_saved * 45.0
+    return webinars, hours_saved, money_saved
+
+
 st.set_page_config(page_title="Webinar Marketing Analytics Dashboard", layout="wide")
 apply_dashboard_style()
 init_state()
@@ -44,12 +87,13 @@ with ctrl_b:
     st.toggle("Hide Inputs", key="hide_all_inputs")
 
 with st.sidebar:
-    t = int(st.session_state["webinars_saved"])
+    roi_hist = load_snapshot_history()
+    webinars_saved, hours_saved, money_saved = _automation_roi_from_history(roi_hist)
     with st.container(border=True):
         st.markdown("**Automation ROI**")
-        st.metric("Webinars Saved", f"{t}")
-        st.metric("Time Saved", f"{t}h")
-        st.metric("Money Saved", f"${t * 45:,.0f}")
+        st.metric("Webinars Saved", f"{webinars_saved}")
+        st.metric("Time Saved", f"{hours_saved:,.1f}h")
+        st.metric("Money Saved", f"${money_saved:,.0f}")
     st.subheader("LLM Settings")
     key_override = st.text_input("OpenAI API Key (override)", type="password", placeholder="sk-...")
     api_key = get_key(key_override)
