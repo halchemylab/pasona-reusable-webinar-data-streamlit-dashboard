@@ -536,33 +536,35 @@ def render_survey_tab(api_key: str, model: str, temp: float) -> None:
             if not api_key:
                 st.error("API key missing. Set OPENAI_API_KEY or provide key in sidebar.")
             elif up is not None:
-                try:
+                with st.spinner("Parsing survey data..."):
                     try:
-                        sdf = pd.read_csv(up)
-                    except Exception:
-                        up.seek(0)
-                        sdf = pd.read_csv(up, encoding="utf-8-sig")
-                    d, tables, dbg, ok = parse_survey_csv(sdf, api_key, model, temp)
+                        try:
+                            sdf = pd.read_csv(up)
+                        except Exception:
+                            up.seek(0)
+                            sdf = pd.read_csv(up, encoding="utf-8-sig")
+                        d, tables, dbg, ok = parse_survey_csv(sdf, api_key, model, temp)
+                        if ok:
+                            st.session_state["survey_derived"] = d
+                            st.session_state["survey_tables"] = tables
+                            st.success("Survey CSV parsed successfully.")
+                        else:
+                            st.error("Survey parse failed.")
+                            with st.expander("Model output/debug"):
+                                st.text(dbg)
+                    except Exception as e:
+                        st.error(f"CSV read failed: {e}")
+            elif txt.strip():
+                with st.spinner("Parsing survey data..."):
+                    d, dbg, ok = parse_survey_text(txt, api_key, model, temp)
                     if ok:
                         st.session_state["survey_derived"] = d
-                        st.session_state["survey_tables"] = tables
-                        st.success("Survey CSV parsed successfully.")
+                        st.session_state["survey_tables"] = {}
+                        st.success("Survey text parsed successfully.")
                     else:
                         st.error("Survey parse failed.")
                         with st.expander("Model output/debug"):
                             st.text(dbg)
-                except Exception as e:
-                    st.error(f"CSV read failed: {e}")
-            elif txt.strip():
-                d, dbg, ok = parse_survey_text(txt, api_key, model, temp)
-                if ok:
-                    st.session_state["survey_derived"] = d
-                    st.session_state["survey_tables"] = {}
-                    st.success("Survey text parsed successfully.")
-                else:
-                    st.error("Survey parse failed.")
-                    with st.expander("Model output/debug"):
-                        st.text(dbg)
             else:
                 st.warning("Upload CSV or paste survey text.")
     d = st.session_state["survey_derived"]
@@ -707,20 +709,20 @@ def render_exec_summary_tab(api_key: str, model: str, temp: float) -> None:
                     scores = pd.to_numeric(regs_df["score"], errors="coerce")
                     if len(scores.dropna()) > 0:
                         attendance = int((scores.fillna(0) > 0).sum())
-            elif "total_prospects" in regs_df.columns:
+            if "total_prospects" in regs_df.columns:
                 totals = regs_df.copy()
                 totals["total_prospects"] = pd.to_numeric(totals["total_prospects"], errors="coerce").fillna(0)
                 if "list_type" in totals.columns:
                     lt = totals["list_type"].astype(str).str.strip().str.lower()
                     reg_total = int(totals.loc[lt == "registrant", "total_prospects"].sum())
                     att_total = int(totals.loc[lt == "attendee", "total_prospects"].sum())
-                    if reg_total > 0:
+                    if registrations <= 0 and reg_total > 0:
                         registrations = reg_total
-                    else:
+                    elif registrations <= 0:
                         registrations = int(totals["total_prospects"].sum())
-                    if att_total > 0:
+                    if attendance is None and att_total > 0:
                         attendance = att_total
-                else:
+                elif registrations <= 0:
                     registrations = int(totals["total_prospects"].sum())
 
         st.markdown("#### Full Funnel")
