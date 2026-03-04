@@ -1,6 +1,7 @@
 import json
 import time
 import hashlib
+import logging
 from pathlib import Path
 from typing import Optional, Type
 
@@ -9,6 +10,12 @@ from pydantic import BaseModel, ValidationError
 
 CACHE_FILE = Path("data/api_cache.json")
 MAX_CACHE_ENTRIES = 500
+logger = logging.getLogger(__name__)
+
+
+def _log_event(level: int, event: str, **fields) -> None:
+    payload = {"event": event, **fields}
+    logger.log(level, json.dumps(payload, ensure_ascii=False, default=str))
 
 
 def _cache_key(model: str, temp: float, schema: dict, sys: str, usr: str) -> str:
@@ -28,7 +35,8 @@ def _load_cache() -> dict:
         if not CACHE_FILE.exists():
             return {}
         return json.loads(CACHE_FILE.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as e:
+        _log_event(logging.WARNING, "cache_load_failed", path=str(CACHE_FILE), error=str(e))
         return {}
 
 
@@ -36,8 +44,8 @@ def _save_cache(cache: dict) -> None:
     try:
         CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
         CACHE_FILE.write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
-    except Exception:
-        pass
+    except Exception as e:
+        _log_event(logging.WARNING, "cache_save_failed", path=str(CACHE_FILE), error=str(e))
 
 
 def _cache_get(key: str) -> Optional[str]:
@@ -96,9 +104,17 @@ def api_structured(api_key: str, model: str, temp: float, schema_model: Type[Bas
     if cached_raw:
         try:
             parsed = schema_model.model_validate(json.loads(cached_raw))
+            _log_event(logging.INFO, "cache_hit", model=model, schema=schema_model.__name__, key=key)
             return parsed, cached_raw, None
-        except Exception:
-            pass
+        except Exception as e:
+            _log_event(
+                logging.WARNING,
+                "cache_hit_invalid_payload",
+                model=model,
+                schema=schema_model.__name__,
+                key=key,
+                error=str(e),
+            )
     for attempt in range(retries + 1):
         try:
             if hasattr(client, "responses"):
@@ -137,6 +153,14 @@ def api_structured(api_key: str, model: str, temp: float, schema_model: Type[Bas
             parsed = schema_model.model_validate(json.loads(raw))
             if raw:
                 _cache_put(key, raw)
+            _log_event(
+                logging.INFO,
+                "api_structured_success",
+                model=model,
+                schema=schema_model.__name__,
+                attempt=attempt + 1,
+                from_cache=False,
+            )
             return parsed, raw, None
         except (APITimeoutError, APIConnectionError, RateLimitError, APIStatusError) as e:
             if isinstance(e, APIStatusError):
@@ -148,12 +172,47 @@ def api_structured(api_key: str, model: str, temp: float, schema_model: Type[Bas
             last_err = _api_error_message(e, attempt, retries)
             status_code = getattr(e, "status_code", None)
             retryable_status = status_code is None or int(status_code) >= 500 or int(status_code) == 429
+            _log_event(
+                logging.WARNING,
+                "api_structured_request_error",
+                model=model,
+                schema=schema_model.__name__,
+                attempt=attempt + 1,
+                retries=retries + 1,
+                status_code=status_code,
+                retryable=retryable_status,
+                error=str(e),
+            )
             if attempt < retries and retryable_status:
                 time.sleep(1.2 * (attempt + 1))
                 continue
             break
         except (json.JSONDecodeError, ValidationError) as e:
+            _log_event(
+                logging.ERROR,
+                "api_structured_parse_error",
+                model=model,
+                schema=schema_model.__name__,
+                attempt=attempt + 1,
+                error=str(e),
+            )
             return None, raw, _api_error_message(e, attempt, retries)
         except Exception as e:
+            _log_event(
+                logging.ERROR,
+                "api_structured_unexpected_error",
+                model=model,
+                schema=schema_model.__name__,
+                attempt=attempt + 1,
+                error=str(e),
+            )
             return None, raw, _api_error_message(e, attempt, retries)
+    _log_event(
+        logging.ERROR,
+        "api_structured_failed",
+        model=model,
+        schema=schema_model.__name__,
+        retries=retries + 1,
+        error=last_err or "Unknown API failure",
+    )
     return None, raw, last_err or "Unknown API failure"
