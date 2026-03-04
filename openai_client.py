@@ -2,6 +2,7 @@ import json
 import time
 import hashlib
 import logging
+import random
 from pathlib import Path
 from typing import Optional, Type
 
@@ -10,6 +11,8 @@ from pydantic import BaseModel, ValidationError
 
 CACHE_FILE = Path("data/api_cache.json")
 MAX_CACHE_ENTRIES = 500
+CACHE_VERSION = 1
+CACHE_TTL_SECONDS = 7 * 24 * 60 * 60
 logger = logging.getLogger(__name__)
 
 
@@ -52,6 +55,11 @@ def _cache_get(key: str) -> Optional[str]:
     cache = _load_cache()
     entry = cache.get(key)
     if isinstance(entry, dict):
+        if int(entry.get("version", 0)) != CACHE_VERSION:
+            return None
+        saved_at = int(entry.get("saved_at", 0) or 0)
+        if saved_at <= 0 or int(time.time()) - saved_at > CACHE_TTL_SECONDS:
+            return None
         raw = entry.get("raw")
         return raw if isinstance(raw, str) else None
     return None
@@ -59,7 +67,7 @@ def _cache_get(key: str) -> Optional[str]:
 
 def _cache_put(key: str, raw: str) -> None:
     cache = _load_cache()
-    cache[key] = {"raw": raw, "saved_at": int(time.time())}
+    cache[key] = {"raw": raw, "saved_at": int(time.time()), "version": CACHE_VERSION}
     if len(cache) > MAX_CACHE_ENTRIES:
         ordered = sorted(cache.items(), key=lambda kv: kv[1].get("saved_at", 0))
         cache = dict(ordered[-MAX_CACHE_ENTRIES:])
@@ -92,18 +100,44 @@ def _api_error_message(err: Exception, attempt: int, retries: int) -> str:
     return f"{prefix} Unexpected error: {err}"
 
 
+def _extract_json_block(raw: str) -> Optional[str]:
+    txt = (raw or "").strip()
+    if not txt:
+        return None
+    if txt.startswith("```"):
+        txt = txt.replace("```json", "").replace("```JSON", "").replace("```", "").strip()
+    start = txt.find("{")
+    end = txt.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return None
+    return txt[start : end + 1]
+
+
+def _decode_json_with_repair(raw: str):
+    txt = (raw or "").strip()
+    if not txt:
+        raise json.JSONDecodeError("Empty response", txt, 0)
+    try:
+        return json.loads(txt)
+    except json.JSONDecodeError:
+        candidate = _extract_json_block(txt)
+        if not candidate:
+            raise
+        return json.loads(candidate)
+
+
 def api_structured(api_key: str, model: str, temp: float, schema_model: Type[BaseModel], sys: str, usr: str):
     client = OpenAI(api_key=api_key, timeout=20.0)
     schema = schema_model.model_json_schema()
     key = _cache_key(model, temp, schema, sys, usr)
     raw: Optional[str] = None
-    retries = 1
+    retries = 3
     last_err = None
     send_temp = _should_send_temperature(model, temp)
     cached_raw = _cache_get(key)
     if cached_raw:
         try:
-            parsed = schema_model.model_validate(json.loads(cached_raw))
+            parsed = schema_model.model_validate(_decode_json_with_repair(cached_raw))
             _log_event(logging.INFO, "cache_hit", model=model, schema=schema_model.__name__, key=key)
             return parsed, cached_raw, None
         except Exception as e:
@@ -150,7 +184,7 @@ def api_structured(api_key: str, model: str, temp: float, schema_model: Type[Bas
                 first = choices[0] if choices else None
                 message = getattr(first, "message", None)
                 raw = (getattr(message, "content", None) or "").strip()
-            parsed = schema_model.model_validate(json.loads(raw))
+            parsed = schema_model.model_validate(_decode_json_with_repair(raw))
             if raw:
                 _cache_put(key, raw)
             _log_event(
@@ -184,7 +218,9 @@ def api_structured(api_key: str, model: str, temp: float, schema_model: Type[Bas
                 error=str(e),
             )
             if attempt < retries and retryable_status:
-                time.sleep(1.2 * (attempt + 1))
+                base = 0.8 * (2**attempt)
+                delay = min(base + random.uniform(0.0, 0.35), 6.0)
+                time.sleep(delay)
                 continue
             break
         except (json.JSONDecodeError, ValidationError) as e:
