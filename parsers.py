@@ -513,6 +513,194 @@ def _extract_regs_list_summaries(text: str):
     return df.to_dict(orient="records")
 
 
+def _survey_pick_num_after_label(text: str, label_pattern: str) -> Optional[int]:
+    m = re.search(label_pattern, text, flags=re.I)
+    if not m:
+        return None
+    tail = text[m.end() : m.end() + 120]
+    return to_int(tail)
+
+
+def _survey_section_block(text: str, qnum: int) -> str:
+    m = re.search(rf"(?ms)^\s*{qnum}\.\s*(.*?)(?=^\s*\d+\.\s*|\Z)", text)
+    return m.group(1).strip() if m else ""
+
+
+def _survey_question_blocks(text: str):
+    out = []
+    for m in re.finditer(r"(?ms)^\s*(\d+)\.\s*(.*?)(?=^\s*\d+\.\s*|\Z)", text or ""):
+        qnum = to_int(m.group(1))
+        body = (m.group(2) or "").strip()
+        if qnum is None or not body:
+            continue
+        lines = [ln.strip() for ln in body.splitlines() if ln.strip()]
+        title = lines[0] if lines else ""
+        out.append({"qnum": int(qnum), "title": title, "body": body})
+    return out
+
+
+def _survey_latest_responses(section_text: str, limit: int = 8):
+    if not section_text:
+        return []
+    vals = []
+    for m in re.finditer(r'"([^"\n]{2,260})"', section_text):
+        v = clip_snippet(m.group(1).strip(), 180)
+        if v and v not in vals:
+            vals.append(v)
+        if len(vals) >= limit:
+            break
+    if vals:
+        return vals
+
+    lines = [ln.strip() for ln in section_text.splitlines()]
+    start = None
+    for i, ln in enumerate(lines):
+        if re.search(r"latest\s+responses", ln, flags=re.I):
+            start = i + 1
+            break
+    if start is None:
+        return []
+    for ln in lines[start:]:
+        s = ln.strip().strip('"')
+        if not s:
+            continue
+        low = s.lower()
+        if low in {"more details", "latest responses"}:
+            continue
+        if low.startswith("word cloud visualization"):
+            continue
+        if low.startswith("insights and actions"):
+            break
+        if low.startswith("use excel to view and manipulate results"):
+            break
+        if low in {"forms", "back to questions", "active"}:
+            continue
+        if re.fullmatch(r"\d+\.", s):
+            break
+        if "responses submitted" in low:
+            continue
+        if re.fullmatch(r"\d+\s+responses?", low):
+            continue
+        if re.fullmatch(r"\d+", low):
+            continue
+        if s == ". . .":
+            continue
+        vals.append(clip_snippet(s, 180))
+        if len(vals) >= limit:
+            break
+    return vals
+
+
+def _parse_survey_overview_fast(text: str) -> Dict[str, Any]:
+    t = _norm_ws(text or "")
+    raw_lines = [ln.strip() for ln in (text or "").splitlines()]
+    q_blocks = _survey_question_blocks(text or "")
+    out: Dict[str, Any] = {
+        "n_responses": None,
+        "job_function_counts": {},
+        "job_level_counts": {},
+        "industry_counts": {},
+        "value_rating_stats": {"avg": None, "distribution_counts": {}},
+        "consult_yes_count": None,
+        "consult_no_count": None,
+        "consult_yes_leads": [],
+        "free_text_summaries": {},
+        "top_themes": [],
+    }
+
+    m = re.search(r"(?is)\bresponses?\b[\s:]*([0-9][0-9,]*)", t)
+    if m:
+        out["n_responses"] = to_int(m.group(1))
+    if out["n_responses"] is None:
+        out["n_responses"] = _survey_pick_num_after_label(t, r"(?is)responses?\s+overview")
+
+    # Prefer local line context around "Average Rating" to avoid picking question numbers.
+    for i, ln in enumerate(raw_lines):
+        if re.search(r"average\s+rating", ln, flags=re.I):
+            prev_v = to_float(raw_lines[i - 1]) if i - 1 >= 0 else None
+            next_v = to_float(raw_lines[i + 1]) if i + 1 < len(raw_lines) else None
+            cand = prev_v if prev_v is not None else next_v
+            if cand is not None and 0.0 <= float(cand) <= 5.0:
+                out["value_rating_stats"]["avg"] = float(cand)
+                break
+    if out["value_rating_stats"]["avg"] is None:
+        m = re.search(r"(?is)\b([0-9]+(?:\.[0-9]+)?)\b\s*average\s+rating", t)
+        if m:
+            cand = to_float(m.group(1))
+            if cand is not None and 0.0 <= float(cand) <= 5.0:
+                out["value_rating_stats"]["avg"] = float(cand)
+
+    q9 = _survey_section_block(text or "", 9)
+    yes = 0
+    no = 0
+    q9_lines = [ln.strip() for ln in q9.splitlines() if ln.strip()]
+    for idx, ln in enumerate(q9_lines):
+        s = ln.strip()
+        n = to_int(s)
+        if n is not None and re.search(r"(個別相談|consult)", s, flags=re.I):
+            yes += int(n)
+        elif n is not None and re.search(r"(いいえ|no)\b", s, flags=re.I):
+            no += int(n)
+            continue
+        if re.search(r"(個別相談|consult)", s, flags=re.I):
+            nxt = to_int(q9_lines[idx + 1]) if idx + 1 < len(q9_lines) else None
+            if nxt is not None:
+                yes += int(nxt)
+        elif re.search(r"(いいえ|no)\b", s, flags=re.I):
+            nxt = to_int(q9_lines[idx + 1]) if idx + 1 < len(q9_lines) else None
+            if nxt is not None:
+                no += int(nxt)
+    if yes or no:
+        out["consult_yes_count"] = yes
+        out["consult_no_count"] = no
+    else:
+        consult_block = None
+        for b in q_blocks:
+            title_n = _norm_ws(b.get("title") or "")
+            if any(k in title_n for k in ["個別相談", "個別ミーティング", "oneonone", "consultation", "consult"]):
+                consult_block = b
+                break
+        if consult_block:
+            c_yes, c_no = 0, 0
+            lines = [ln.strip() for ln in consult_block.get("body", "").splitlines() if ln.strip()]
+            for idx, ln in enumerate(lines):
+                if re.search(r"(はい|yes|希望)", ln, flags=re.I):
+                    nxt = to_int(lines[idx + 1]) if idx + 1 < len(lines) else None
+                    if nxt is not None:
+                        c_yes += int(nxt)
+                if re.search(r"(いいえ|no|不要)", ln, flags=re.I):
+                    nxt = to_int(lines[idx + 1]) if idx + 1 < len(lines) else None
+                    if nxt is not None:
+                        c_no += int(nxt)
+            if c_yes or c_no:
+                out["consult_yes_count"] = c_yes
+                out["consult_no_count"] = c_no
+        yes_m = re.search(r"(?is)(?:consult(?:ation)?\s*yes|個別相談)\D{0,30}([0-9][0-9,]*)", t)
+        no_m = re.search(r"(?is)(?:consult(?:ation)?\s*no|いいえ)\D{0,30}([0-9][0-9,]*)", t)
+        if yes_m:
+            out["consult_yes_count"] = to_int(yes_m.group(1))
+        if no_m:
+            out["consult_no_count"] = to_int(no_m.group(1))
+
+    fs: Dict[str, Any] = {}
+    # Classify question blocks by prompt text so it works across different numbering schemes.
+    for b in q_blocks:
+        title_n = _norm_ws(b.get("title") or "")
+        vals = _survey_latest_responses(b.get("body", ""), limit=6)
+        if not vals:
+            continue
+        if any(k in title_n for k in ["有益だと感じた内容", "valuabletopic", "有益だと"]):
+            fs["Q10"] = vals
+        elif any(k in title_n for k in ["課題", "challenges"]):
+            fs["Q11"] = vals
+        elif any(k in title_n for k in ["もう少し詳細", "聞きたかった", "hearmore", "moredetail"]):
+            fs["Q12"] = vals
+        elif any(k in title_n for k in ["その他ご意見", "ご感想", "comments"]):
+            fs["Q14"] = vals
+    out["free_text_summaries"] = fs
+    return out
+
+
 def parse_regs(text: str, api_key: str, model: str, temp: float):
     rows = []
     blocks = _extract_list_blocks(text)
@@ -564,7 +752,23 @@ def parse_regs(text: str, api_key: str, model: str, temp: float):
 
 
 def parse_survey_text(text: str, api_key: str, model: str, temp: float):
-    p, raw, err = api_structured(api_key, model, temp, SurveyDerived, "Infer survey derived metrics. Missing -> null/empty.", text)
+    fast = _parse_survey_overview_fast(text)
+    got_fast_core = any(
+        [
+            fast.get("n_responses") is not None,
+            to_float((fast.get("value_rating_stats") or {}).get("avg")) is not None,
+            fast.get("consult_yes_count") is not None,
+            fast.get("consult_no_count") is not None,
+            bool(fast.get("free_text_summaries")),
+        ]
+    )
+    if got_fast_core:
+        return fast, "", True
+
+    compact = re.sub(r"(?im)^word cloud visualization.*$", "", text or "").strip()
+    if len(compact) > 8000:
+        compact = compact[:8000]
+    p, raw, err = api_structured(api_key, model, temp, SurveyDerived, "Infer survey derived metrics. Missing -> null/empty.", compact)
     if not p:
         return {}, f"{err}\nRaw:\n{raw}", False
     d = p.model_dump()
