@@ -1,13 +1,19 @@
 import hashlib
 import json
+import os
 import uuid
+import time
 from datetime import datetime, timezone
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict
 
+import msvcrt
 import pandas as pd
 
 HISTORY_FILE = Path("data/webinar_history.csv")
+LOCK_WAIT_SECONDS = 5.0
+LOCK_POLL_SECONDS = 0.05
 
 
 def _json_default(v: Any):
@@ -16,6 +22,35 @@ def _json_default(v: Any):
     if hasattr(v, "item"):
         return v.item()
     return str(v)
+
+
+@contextmanager
+def _history_lock():
+    lock_file = HISTORY_FILE.with_suffix(".lock")
+    lock_file.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_file, "a+b") as fh:
+        start = time.time()
+        while True:
+            try:
+                fh.seek(0)
+                msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+                break
+            except OSError:
+                if time.time() - start >= LOCK_WAIT_SECONDS:
+                    raise TimeoutError(f"Timed out acquiring history lock: {lock_file}")
+                time.sleep(LOCK_POLL_SECONDS)
+        try:
+            yield
+        finally:
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+
+
+def _atomic_write_csv(frame: pd.DataFrame, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    frame.to_csv(tmp, index=False, encoding="utf-8-sig")
+    os.replace(tmp, path)
 
 
 def _to_json(v: Any) -> str:
@@ -113,14 +148,14 @@ def build_snapshot_row(
 
 
 def append_snapshot_row(row: Dict[str, Any]) -> Path:
-    HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
     frame = pd.DataFrame([row])
-    if HISTORY_FILE.exists():
-        existing = pd.read_csv(HISTORY_FILE, encoding="utf-8-sig")
-        merged = pd.concat([existing, frame], ignore_index=True, sort=False)
-        merged.to_csv(HISTORY_FILE, index=False, encoding="utf-8-sig")
-    else:
-        frame.to_csv(HISTORY_FILE, mode="a", index=False, header=True, encoding="utf-8-sig")
+    with _history_lock():
+        if HISTORY_FILE.exists():
+            existing = pd.read_csv(HISTORY_FILE, encoding="utf-8-sig")
+            merged = pd.concat([existing, frame], ignore_index=True, sort=False)
+            _atomic_write_csv(merged, HISTORY_FILE)
+        else:
+            _atomic_write_csv(frame, HISTORY_FILE)
     return HISTORY_FILE
 
 
